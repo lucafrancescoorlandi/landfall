@@ -27,7 +27,7 @@ from gpu_extras.batch import batch_for_shader
 bl_info = {
     "name": "Landfall",
     "author": "Luca Orlandi",
-    "version": (3, 27, 1),
+    "version": (3, 27, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Landfall | Properties > Object | Shift+Q | Alt+Q",
     "description": "Maya-style shelf for Blender",
