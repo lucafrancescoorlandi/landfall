@@ -1,0 +1,13 @@
+schema_version = "1.0.0"
+
+id = "landfall"
+version = "3.27.1"
+name = "Landfall"
+tagline = "Maya-style shelf, hotbox and project tools"
+maintainer = "Luca Orlandi"
+type = "add-on"
+
+tags = ["Modeling", "User Interface", "Pipeline"]
+
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
