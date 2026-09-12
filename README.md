@@ -1,4 +1,6 @@
-# Landfall 3.27.1
+<img src="https://raw.githubusercontent.com/lucafrancescoorlandi/landfall/main/docs/landfall-icon.png" width="96" align="right" alt="">
+
+# Landfall 3.27.2
 
 A Blender add-on for artists coming from Maya.
 
@@ -23,7 +25,7 @@ replaced can be switched off from the preferences.
 
 ## Installation
 
-1. Download `landfall.zip`.
+1. Download `landfall-x.x.x.zip`.
 2. In Blender: `Edit → Preferences → Add-ons`.
 3. Click the arrow at the top right of the panel → `Install from Disk…`.
 4. Pick the zip file.
