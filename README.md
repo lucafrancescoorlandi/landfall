@@ -1,6 +1,6 @@
-<img src="https://raw.githubusercontent.com/lucafrancescoorlandi/landfall/main/docs/landfall-icon.png" width="96" align="right" alt="">
+# Landfall 3.37.0
 
-# Landfall 3.27.2
+<img src="https://raw.githubusercontent.com/lucafrancescoorlandi/landfall/main/docs/landfall-icon.png" width="96" align="right" alt="">
 
 A Blender add-on for artists coming from Maya.
 
@@ -77,6 +77,17 @@ To see the exact path on your own machine, expand the Landfall entry in
 accounts for Store, portable and Steam installs, whose paths differ.
 
 ### Uninstalling
+
+**Press Turn off in the Setup section first.** Two of the things Landfall
+changes cannot put themselves back once it is gone. The finite grid works by
+switching off Blender's own floor and axis lines and drawing its own in their
+place, so uninstalling leaves a viewport with no grid at all and nothing to
+restore it — and that state lives in the .blend file, so restarting does not
+help. The Maya colors are a theme, and a theme stays where it is.
+
+Turn off restores both. If you have already uninstalled: re-enable Floor,
+X Axis and Y Axis in the viewport's Overlays menu, and use
+`Preferences → Themes → Reset to Default Theme` for the colors.
 
 Landfall is an extension, and for extensions the **Uninstall** command lives in
 `Preferences → Get Extensions`, at the right end of the row. It is **not** in
@@ -388,8 +399,12 @@ it is missing — and Blender reports nothing. It was seen for real: `Tab`
 stopped entering Edit Mode, and the Mesh keymap held two entries out of a
 hundred and eight, taking `I`, `K`, `P` and `A` with it.
 
-Landfall now rebuilds any keymap that has lost more than half of Blender's own
-shortcuts, shortly after startup, and prints what it rebuilt to the console.
+Landfall rebuilds any keymap that has lost more than half of Blender's own
+shortcuts, and prints what it rebuilt to the console. It looks several times
+over the first few seconds rather than once: a single check right after
+registering found nothing wrong, because Blender had not finished building the
+user configuration yet, and the truncation appeared afterwards. It looks again
+whenever a file is opened, too.
 The threshold is deliberately severe, because no deliberate customisation
 looks like that. If you keep a stripped-down keymap on purpose, turn off
 **Rebuild truncated keymaps at startup**.

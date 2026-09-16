@@ -19,6 +19,7 @@ import os
 import bpy
 import blf
 import bmesh
+import mathutils
 import time
 import numpy as np
 import gpu
@@ -27,7 +28,7 @@ from gpu_extras.batch import batch_for_shader
 bl_info = {
     "name": "Landfall",
     "author": "Luca Orlandi",
-    "version": (3, 27, 2),
+    "version": (3, 37, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Landfall | Properties > Object | Shift+Q | Alt+Q",
     "description": "Maya-style shelf for Blender",
@@ -2106,17 +2107,325 @@ class LANDFALL_OT_frame_selected(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class LANDFALL_OT_extrude_options(bpy.types.Operator):
+    """Extrude with Maya's parameters, all adjustable afterwards.
+
+    Blender's own extrude carries a direction and a distance, so the panel it
+    offers has nothing else to show. Maya's polyExtrudeFace node carries
+    thickness, offset, divisions, twist, taper and keep-faces-together, and
+    those are what the hand reaches for.
+
+    Declaring them as operator properties is what makes them adjustable: the
+    bar at the bottom left, and F9 under the cursor, are drawn by Blender from
+    the properties and re-run the operator on every change. No panel of ours,
+    no sliders of ours — Blender's own machinery, which already knows how to
+    restore the mesh before each re-run.
+
+    What it cannot do is come back later. Once another operation follows, the
+    values are frozen: Blender has no construction history to return to, and
+    nothing in an add-on can supply one.
+    """
+    bl_idname = "landfall.extrude_options"
+    bl_label = "Extrude with options"
+    bl_description = (
+        "Extrude the selected faces with thickness, offset, divisions, twist "
+        "and taper. Press F9 afterwards to adjust them"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    # SKIP_SAVE su tutti: Blender ricorda i valori dell'ultima esecuzione e
+    # li ripropone alla successiva, quindi una seconda estrusione ripartiva
+    # con le divisioni e il taper della prima. Maya azzera ogni volta, e cosi'
+    # facciamo noi.
+    thickness: bpy.props.FloatProperty(
+        name="Thickness", description="Distance along the face normal",
+        default=0.0, unit="LENGTH", options={"SKIP_SAVE"})
+    offset: bpy.props.FloatProperty(
+        name="Offset", description="Inset the face before extruding, as Maya's "
+        "Offset does", default=0.0, unit="LENGTH", options={"SKIP_SAVE"})
+    divisions: bpy.props.IntProperty(
+        name="Divisions", description="How many segments along the extrusion",
+        default=1, min=1, soft_max=20, options={"SKIP_SAVE"})
+    keep_together: bpy.props.BoolProperty(
+        name="Keep Faces Together",
+        description="Extrude the selection as one region. Off extrudes every "
+        "face on its own, each along its own normal",
+        default=True, options={"SKIP_SAVE"})
+    twist: bpy.props.FloatProperty(
+        name="Twist", description="Rotation around the extrusion axis, spread "
+        "over the divisions", default=0.0, subtype="ANGLE", options={"SKIP_SAVE"})
+    taper: bpy.props.FloatProperty(
+        name="Taper", description="Scale of the far end. 1 keeps the size, "
+        "below 1 narrows it", default=1.0, min=0.0, soft_max=3.0, options={"SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (obj is not None and obj.type == "MESH"
+                and context.mode == "EDIT_MESH")
+
+    def execute(self, context):
+        obj = context.active_object
+        bm = bmesh.from_edit_mesh(obj.data)
+        facce = [f for f in bm.faces if f.select]
+        if not facce:
+            self.report({"WARNING"}, "Select at least one face")
+            return {"CANCELLED"}
+
+        try:
+            if self.offset:
+                bmesh.ops.inset_region(
+                    bm, faces=facce, thickness=abs(self.offset),
+                    depth=0.0, use_even_offset=True, use_boundary=True)
+                facce = [f for f in bm.faces if f.select]
+
+            # I cappelli si raccolgono e si selezionano una volta sola alla
+            # fine: selezionandoli dentro il ciclo, ogni faccia azzerava la
+            # selezione della precedente e con Keep Faces Together spento ne
+            # restava selezionata una sola invece di tutte.
+            cappelli = []
+            if self.keep_together:
+                cappelli += self._estrudi(bm, facce)
+            else:
+                for f in list(facce):
+                    cappelli += self._estrudi(bm, [f])
+
+            for f in bm.faces:
+                f.select_set(False)
+            for f in cappelli:
+                if f.is_valid:
+                    f.select_set(True)
+            bm.select_flush(True)
+        except Exception as err:
+            # A failure here leaves the mesh half-built, and the caller has no
+            # way to know. Say so instead of reporting success.
+            self.report({"ERROR"}, "Extrude failed: %s" % err)
+            return {"CANCELLED"}
+
+        bmesh.update_edit_mesh(obj.data, loop_triangles=True, destructive=True)
+        return {"FINISHED"}
+
+    def _estrudi(self, bm, facce):
+        """One extrusion, divided into the requested number of segments.
+
+        Each segment moves by its share of the thickness and takes its share
+        of the twist and the taper, so the parameters describe the whole
+        extrusion rather than each step. Returns the faces at the far end, for
+        the caller to select once every extrusion is done.
+        """
+        passi = max(1, self.divisions)
+        normale_grezza = mathutils.Vector((0.0, 0.0, 0.0))
+        for f in facce:
+            normale_grezza += f.normal * f.calc_area()
+        normale = mathutils.Vector(normale_grezza)
+        if normale.length < 1e-9:
+            normale = mathutils.Vector(facce[0].normal)
+        normale.normalize()
+
+        # The averaged normal survives only as the twist axis and as a
+        # fallback: on a closed surface it cancels out, and rotating around a
+        # vector that does not exist means nothing.
+        asse_valido = normale_grezza.length > 1e-9
+
+        salto = self.thickness / passi
+        giro = self.twist / passi if asse_valido else 0.0
+        # Per-step scale whose product over the steps is exactly the taper.
+        scala = self.taper ** (1.0 / passi) if self.taper > 0 else 0.0
+        correnti = list(facce)
+
+        for _ in range(passi):
+            # Directions are worked out from the faces about to be extruded,
+            # not from the caps recognised afterwards.
+            #
+            # Recognising them afterwards as "faces made only of new vertices"
+            # looked right, but on the caps of a cylinder the side walls are
+            # also made only of new vertices: a probe inside the running code
+            # showed a vertex touching three faces, the cap and two radial
+            # walls, and the direction came out tilted by forty-five degrees.
+            #
+            # Each vertex moves along the average of the normals of the
+            # selected faces it belongs to, divided by the average cosine
+            # between that direction and those normals. Without the division
+            # the faces do not end up the requested distance apart: on a cube
+            # with every face selected and a thickness of 0.5 the growth was
+            # 0.289, which is 0.5 over the square root of three. On a flat
+            # face the cosine is one and nothing changes.
+            direzioni = {}
+            if salto:
+                insieme_correnti = set(correnti)
+                for f in correnti:
+                    for v in f.verts:
+                        chiave = tuple(round(c, 5) for c in v.co)
+                        if chiave in direzioni:
+                            continue
+                        vicine = [g for g in v.link_faces
+                                  if g in insieme_correnti]
+                        direzione = mathutils.Vector((0.0, 0.0, 0.0))
+                        for g in vicine:
+                            direzione += g.normal * g.calc_area()
+                        if direzione.length < 1e-9:
+                            direzione = mathutils.Vector(normale)
+                        direzione.normalize()
+                        fattore = 1.0
+                        if vicine:
+                            coseno = sum(direzione.dot(g.normal)
+                                         for g in vicine) / len(vicine)
+                            if coseno > 0.05:
+                                fattore = 1.0 / coseno
+                        direzioni[chiave] = direzione * (salto * fattore)
+
+            ret = bmesh.ops.extrude_face_region(bm, geom=correnti)
+            nuovi = [g for g in ret["geom"]
+                     if isinstance(g, bmesh.types.BMVert)]
+            insieme = set(nuovi)
+            cappello = [g for g in ret["geom"]
+                        if isinstance(g, bmesh.types.BMFace)
+                        and all(v in insieme for v in g.verts)]
+            if not cappello:
+                break
+
+            # The face we extruded from stays where it was and becomes an
+            # internal diaphragm: one extrusion gave eleven faces instead of
+            # ten and four non-manifold edges, and every division added more.
+            #
+            # The context is FACES rather than FACES_ONLY: the first also
+            # takes away vertices and edges left without any face, the second
+            # leaves them. Extruding the whole closed surface of a sphere
+            # creates no side walls, so the original shell stayed inside as
+            # forty-two loose vertices and a hundred and twenty loose edges.
+            vecchie = [f for f in correnti if f.is_valid]
+            if vecchie:
+                bmesh.ops.delete(bm, geom=vecchie, context="FACES")
+
+            # Straight after the extrusion the new vertices sit exactly on top
+            # of the originals, so the directions worked out before are found
+            # again by coordinate.
+            if salto:
+                for v in nuovi:
+                    delta = direzioni.get(tuple(round(c, 5) for c in v.co))
+                    if delta is not None:
+                        v.co += delta
+
+            centro = mathutils.Vector((0.0, 0.0, 0.0))
+            for v in nuovi:
+                centro += v.co
+            centro /= len(nuovi)
+
+            if abs(scala - 1.0) > 1e-9:
+                bmesh.ops.scale(
+                    bm, verts=nuovi, vec=(scala, scala, scala),
+                    space=mathutils.Matrix.Translation(-centro))
+            if abs(giro) > 1e-9:
+                bmesh.ops.rotate(
+                    bm, verts=nuovi, cent=centro,
+                    matrix=mathutils.Matrix.Rotation(giro, 3, normale))
+
+            correnti = cappello
+
+        return correnti
+
+
+class LANDFALL_OT_extrude_move(bpy.types.Macro):
+    """Our extrude chained to Blender's own move, the way E already works.
+
+    Blender's E is not a single operator but a macro: extrude, then translate.
+    That is why its adjust panel shows Move X, Y and Z. Building the same
+    thing with our extrude in front means the panel lists our six parameters
+    and the move together, and it appears in the bottom left corner, where it
+    does not sit over the geometry.
+
+    Two things come for free this way rather than with a popup of our own: the
+    drag that sets the distance is Blender's, already familiar and already
+    right, and the panel is drawn and re-run by Blender.
+    """
+    bl_idname = "landfall.extrude_move"
+    bl_label = "Extrude with options and move"
+    bl_options = {"REGISTER", "UNDO"}
+
+
+def _define_macro():
+    """A macro's steps can only be defined once the classes they name are
+    registered, so this runs after register_class, not at import time."""
+    try:
+        LANDFALL_OT_extrude_move.define("LANDFALL_OT_extrude_options")
+        passo = LANDFALL_OT_extrude_move.define("TRANSFORM_OT_translate")
+        passo.properties.orient_type = "NORMAL"
+        passo.properties.constraint_axis = (False, False, True)
+        passo.properties.release_confirm = True
+    except Exception as err:
+        print("[landfall] could not build the extrude macro: %s" % err)
+
+
+_extrude_keymaps = []
+
+
+def _extrude_enable(context):
+    """Put our extrude on E and quiet Blender's own.
+
+    Blender's entry is muted, not removed: switching the preference off brings
+    it back, and nothing of Blender's is lost.
+    """
+    kc = context.window_manager.keyconfigs.addon
+    if kc is None:
+        return
+    user = context.window_manager.keyconfigs.user.keymaps.get("Mesh")
+    if user is not None:
+        for k in user.keymap_items:
+            if (k.idname == "view3d.edit_mesh_extrude_move_normal"
+                    and k.type == "E" and not (k.ctrl or k.alt or k.shift)):
+                k.active = False
+    try:
+        km = kc.keymaps.new(name="Mesh", space_type="EMPTY")
+        kmi = km.keymap_items.new("landfall.extrude_move", "E", "PRESS")
+        _extrude_keymaps.append((km, kmi))
+    except Exception:
+        pass
+    _wake_user_kmi("landfall.extrude_move")
+
+
+def _extrude_disable():
+    for km, kmi in _extrude_keymaps:
+        try:
+            km.keymap_items.remove(kmi)
+        except Exception:
+            pass
+    _extrude_keymaps.clear()
+    try:
+        user = bpy.context.window_manager.keyconfigs.user.keymaps.get("Mesh")
+        if user is not None:
+            for k in user.keymap_items:
+                if k.idname == "view3d.edit_mesh_extrude_move_normal":
+                    k.active = True
+    except Exception:
+        pass
+
+
+def _extrude_update(self, context):
+    _extrude_disable()
+    if self.maya_extrude:
+        _extrude_enable(context)
+
+
 class LANDFALL_OT_toggle_scene_flag(bpy.types.Operator):
     bl_idname = "landfall.toggle_scene_flag"
     bl_label = "Toggle"
     bl_description = "Flip one of Landfall's scene switches"
     bl_options = {"REGISTER", "UNDO"}
 
-    prop: bpy.props.StringProperty(options={"SKIP_SAVE"})
+    # Enum e non testo libero: Blender rifiuta un valore sbagliato alla
+    # chiamata, invece che l'operatore scoprirlo a meta' e riportare
+    # "Unknown switch" a cose fatte.
+    prop: bpy.props.EnumProperty(
+        items=[("landfall_border_show", "Border edges", ""),
+               ("landfall_cage_show", "Cage", ""),
+               ("landfall_grid_finite", "Finite grid", "")],
+        default="landfall_border_show",
+        options={"SKIP_SAVE"},
+    )
 
     def execute(self, context):
-        if not self.prop or not hasattr(context.scene, self.prop):
-            self.report({"WARNING"}, "Unknown switch: %s" % self.prop)
+        if not hasattr(context.scene, self.prop):
+            self.report({"WARNING"}, "%s is not available" % self.prop)
             return {"CANCELLED"}
         setattr(context.scene, self.prop, not getattr(context.scene, self.prop))
         return {"FINISHED"}
@@ -2395,6 +2704,38 @@ def _gizmos_load(*args):
     bpy.app.timers.register(_gizmos_sync, first_interval=0.1)
 
 
+def _reapply_mutes():
+    """Silence again what a keymap rebuild has just brought back.
+
+    Everything Landfall replaces rather than adds is muted, never removed, so
+    switching a preference off restores it. A rebuild undoes those mutings,
+    so they are applied again — and only for the preferences that are on.
+    """
+    context = bpy.context
+    p = prefs(context)
+    if p is None:
+        return
+    try:
+        if p.maya_navigation:
+            for name, idname in MAYA_NAV_MUTE:
+                km = context.window_manager.keyconfigs.user.keymaps.get(name)
+                if km is None:
+                    continue
+                for k in km.keymap_items:
+                    if k.idname == idname:
+                        k.active = False
+        if p.maya_extrude:
+            km = context.window_manager.keyconfigs.user.keymaps.get("Mesh")
+            if km is not None:
+                for k in km.keymap_items:
+                    if (k.idname == "view3d.edit_mesh_extrude_move_normal"
+                            and k.type == "E"
+                            and not (k.ctrl or k.alt or k.shift)):
+                        k.active = False
+    except Exception as err:
+        print("[landfall] could not re-apply the keymap mutings: %s" % err)
+
+
 def _keymap_is_ours(kmi):
     if "landfall" in kmi.idname:
         return True
@@ -2431,28 +2772,59 @@ def _keymap_survey():
     return out
 
 
+# How many more times the repair should look, and how long it waits between
+# looks. A single check 0.4 s after registering was not enough: Blender had
+# not finished building the user configuration yet, so the check found nothing
+# wrong and the truncation appeared afterwards. Measured on a Windows install
+# where E and I were gone and the repair had already run and reported nothing.
+_heal_attempts = [0]
+HEAL_ROUNDS = 6
+HEAL_WAIT = 1.5
+
+
 def _keymap_heal():
-    """Rebuild any truncated user keymap, once, shortly after loading.
+    """Rebuild any truncated user keymap.
 
     restore_to_default rebuilds the map from the stock entries and the add-on
     ones together, so nothing of ours is lost. The threshold is deliberately
     severe — half the stock entries missing — because no deliberate
     customisation looks like that, while the fault always does.
+
+    Returns the number of seconds to wait before looking again, or None to
+    stop. It keeps looking for a few rounds rather than trusting one glance:
+    the corruption can arrive after the first check, and a keymap that loses
+    its entries reports nothing anywhere.
     """
     p = prefs(bpy.context)
     if p is not None and not p.heal_keymaps:
         return None
+
+    ricostruite = 0
     for km, native, expected in _keymap_survey():
         try:
             km.restore_to_default()
+            ricostruite += 1
             print("[landfall] rebuilt the '%s' keymap: it held %d of %d "
                   "stock shortcuts" % (km.name, native, expected))
         except Exception as err:
             print("[landfall] could not rebuild '%s': %s" % (km.name, err))
-    return None
+
+    if ricostruite:
+        # restore_to_default brings back every stock entry, including the ones
+        # we deliberately silence. Without this, E ended up with both our
+        # extrude and Blender's own active at once, and loop select came back
+        # on Alt+click where the orbit lives.
+        _reapply_mutes()
+
+    _heal_attempts[0] += 1
+    if _heal_attempts[0] >= HEAL_ROUNDS:
+        return None
+    return HEAL_WAIT
 
 
 def _keymap_heal_load(*args):
+    """Start the rounds again: a new file brings its own configuration."""
+    _heal_attempts[0] = 0
     bpy.app.timers.register(_keymap_heal, first_interval=0.4)
 
 
@@ -3492,6 +3864,17 @@ class LANDFALL_Prefs(bpy.types.AddonPreferences):
         default=True,
         update=lambda self, context: _marking_update(self, context),
     )
+    maya_extrude: bpy.props.BoolProperty(
+        name="Maya extrude on E",
+        description=(
+            "Puts thickness, offset, divisions, twist and taper on E, chained "
+            "to Blender's own move so the drag stays the same. The adjust "
+            "panel at the bottom left then lists all of them together. Off "
+            "restores Blender's plain extrude"
+        ),
+        default=True,
+        update=_extrude_update,
+    )
     heal_keymaps: bpy.props.BoolProperty(
         name="Rebuild truncated keymaps at startup",
         description=(
@@ -3540,6 +3923,7 @@ class LANDFALL_Prefs(bpy.types.AddonPreferences):
         box = layout.box()
         box.prop(self, "maya_navigation")
         box.prop(self, "maya_gizmos")
+        box.prop(self, "maya_extrude")
         box.prop(self, "heal_keymaps")
         col = box.column(align=True)
         col.enabled = False
@@ -4110,6 +4494,14 @@ def draw_modeling(layout, context):
 
     sub = col.column(align=True)
     sub.enabled = edit
+    # L'interruttore sta accanto al comando, non solo nelle preferenze: Luca
+    # deve vedere a colpo d'occhio se E sta usando la nostra estrusione.
+    riga = sub.row(align=True)
+    riga.operator("landfall.extrude_options", text="Extrude with options",
+                  icon="ORIENTATION_NORMAL")
+    if p is not None:
+        riga.prop(p, "maya_extrude", text="", toggle=True,
+                  icon="EVENT_E")
     sub.operator("landfall.merge_by_distance", text="Merge by distance", icon="AUTOMERGE_ON")
     sub.operator("landfall.merge_at_center", text="Merge at center", icon="SNAP_MIDPOINT")
     row = sub.row(align=True)
@@ -4219,6 +4611,15 @@ def draw_setup(layout, context):
     box.operator("landfall.save_defaults", text="Save as startup",
                  icon="FILE_TICK")
     box.operator("landfall.self_check", text="Self check", icon="CHECKMARK")
+
+    # L'avviso sta qui e non solo nella documentazione: nessuno legge un PDF
+    # prima di disinstallare. Turn off riaccende la griglia nativa e rimette
+    # il tema; disinstallare senza premerlo lascia il viewport senza griglia
+    # e i colori di Maya, e a quel punto l'addon non c'e' piu' per rimediare.
+    nota = box.column(align=True)
+    nota.scale_y = 0.8
+    nota.label(text="Press Turn off before uninstalling:", icon="INFO")
+    nota.label(text="it puts the grid and the theme back.")
 
     layout.separator()
     draw_nav_toggle(layout, context)
@@ -4456,6 +4857,8 @@ CLASSES = (
     LANDFALL_OT_toggle_gizmos,
     LANDFALL_OT_self_check,
     LANDFALL_OT_frame_selected,
+    LANDFALL_OT_extrude_options,
+    LANDFALL_OT_extrude_move,
     LANDFALL_OT_toggle_scene_flag,
     LANDFALL_OT_marking_menu,
     LANDFALL_OT_select_mode_multi,
@@ -4656,6 +5059,8 @@ def _register_handlers():
             lista.append(_clear_all_caches)
     if _gizmos_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_gizmos_load)
+    if _keymap_heal_load not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_keymap_heal_load)
     bpy.app.timers.register(_gizmos_sync, first_interval=0.2)
     bpy.app.timers.register(_keymap_heal, first_interval=0.4)
     # During register Blender hands out a restricted context in which the
@@ -4753,8 +5158,12 @@ def register():
     _register_handlers()
     _register_keymaps(bpy.context.window_manager)
 
+    _define_macro()
+
     p = prefs(bpy.context)
     if p is not None:
+        if p.maya_extrude:
+            _extrude_enable(bpy.context)
         if p.maya_navigation:
             _maya_nav_enable(bpy.context)
         if p.marking_menu:
@@ -4764,6 +5173,7 @@ def register():
 
 
 def unregister():
+    _extrude_disable()
     _delete_disable()
     _marking_disable()
     _sheet_stop()
@@ -4784,7 +5194,7 @@ def unregister():
          (_clear_border_cache, _clear_cage_cache, _wire_follow_mode)),
         (bpy.app.handlers.load_post,
          (_clear_border_cache, _clear_cage_cache, _wire_reset, _grid_sync,
-          _gizmos_load)),
+          _gizmos_load, _keymap_heal_load)),
         (bpy.app.handlers.undo_post, (_clear_all_caches,)),
         (bpy.app.handlers.redo_post, (_clear_all_caches,)),
     ):
