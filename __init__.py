@@ -14,13 +14,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import json
 import os
+import time
 
 import bpy
 import blf
 import bmesh
 import mathutils
-import time
 import numpy as np
 import gpu
 from gpu_extras.batch import batch_for_shader
@@ -28,7 +29,7 @@ from gpu_extras.batch import batch_for_shader
 bl_info = {
     "name": "Landfall",
     "author": "Luca Orlandi",
-    "version": (3, 37, 0),
+    "version": (3, 41, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Landfall | Properties > Object | Shift+Q | Alt+Q",
     "description": "Maya-style shelf for Blender",
@@ -171,6 +172,46 @@ def _view3d_area(context):
             if region.type == "WINDOW":
                 return area, region
     return None, None
+
+
+def _redraw_view3d(context=None):
+    """Tag every 3D viewport in every window for redraw.
+
+    The update callbacks used to read context.window.screen, which is None
+    when the property is set from a timer, the Python console or a script,
+    and the whole callback died on an AttributeError before it got there.
+    """
+    try:
+        wm = (context or bpy.context).window_manager
+        windows = wm.windows
+    except Exception:
+        return
+    for window in windows:
+        screen = window.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
+def _start_timer(fn, first_interval):
+    """Register a timer once. Opening several files in a row used to stack a
+    copy of the same timer per file, each resetting the other's counter."""
+    try:
+        if bpy.app.timers.is_registered(fn):
+            return
+    except Exception:
+        pass
+    bpy.app.timers.register(fn, first_interval=first_interval)
+
+
+def _stop_timer(fn):
+    try:
+        if bpy.app.timers.is_registered(fn):
+            bpy.app.timers.unregister(fn)
+    except Exception:
+        pass
 
 
 def _shortcut(idname, props=None):
@@ -371,25 +412,36 @@ def _join(parts):
         return EMPTY_COORDS
     return parts[0] if len(parts) == 1 else np.concatenate(parts)
 
-BORDER_BUDGET = 400
+# Seconds of fresh border computation allowed per redraw. A count of objects
+# was the earlier measure, and four hundred fresh objects took 236 ms in one
+# frame on a scene of twelve hundred: time is what the eye notices.
+BORDER_BUDGET_S = 0.006
 
-# Reading a mesh's attributes while it is being edited goes through the mesh
-# that carries the BMesh, and measures about twenty times slower than the same
-# read in Object Mode: 50 ms against 2.5 ms on a 290k edge grid. Every vertex
-# you drag invalidates the cache, so on a dense mesh the recompute would land
-# on every single frame.
+# While a mesh is being edited its border is refreshed on its own clock, not
+# on every redraw: every vertex you drag invalidates the cache, so on a dense
+# mesh the recompute would land on every single frame.
 #
-# Rather than refusing to draw above some size, the overlay keeps the last
-# result while you are dragging and refreshes at most this often. The border
-# trails the geometry by a fraction of a second and the viewport stays free.
-EDIT_REFRESH_S = 0.25
+# The interval follows the cost of the mesh. A refresh that takes 0.1 ms can
+# run thirty times a second and the border follows the mouse; one that takes
+# 5 ms runs ten times a second and the viewport stays free. The interval is
+# the measured cost times EDIT_REFRESH_RATIO, clamped between the two limits.
+# And it only runs when the mesh has actually changed since the last refresh:
+# the depsgraph says so, and sitting still costs nothing at all.
+EDIT_REFRESH_MIN_S = 0.03
+EDIT_REFRESH_MAX_S = 0.25
+EDIT_REFRESH_RATIO = 20.0
 
 MAX_EDGES = 400000
 
-_draw_handle = None
 _border_cache = {}
-# Last good result per object while editing, kept across invalidations.
+# Per object in Edit Mode: (time of the last refresh, its coordinates, the
+# interval to wait before the next one).
 _border_recent = {}
+# Objects in Edit Mode whose geometry changed since their last refresh.
+_edit_dirty = set()
+# The one object whose depsgraph update was caused by our own sync, which
+# would otherwise count as an edit and start the cycle again.
+_self_sync = set()
 
 
 def _cache_key(obj):
@@ -416,29 +468,57 @@ def _cache_key(obj):
 _generation = [0]
 
 
-def _invalidate(cache, depsgraph):
-    _generation[0] += 1
-    """Drop only what actually changed.
+def _changed_keys(depsgraph):
+    """Pointers of the objects whose geometry or transform just changed.
+
+    None means "everything": no depsgraph to ask, or an update we could not
+    read, and then the caller drops the whole cache rather than guess.
+    """
+    if depsgraph is None:
+        return None, True
+    try:
+        keys = set()
+        geometry = False
+        for update in depsgraph.updates:
+            # Only objects: the caches are keyed by object, and the mesh
+            # datablock's own entry — which every edit also carries — would
+            # count as a second, unrelated geometry change.
+            if not isinstance(update.id, bpy.types.Object):
+                continue
+            if update.is_updated_geometry:
+                key = update.id.original.as_pointer()
+                if key in _self_sync:
+                    # Our own update_from_editmode, not an edit: it must
+                    # neither invalidate what it just produced nor mark the
+                    # object as changed, or the refresh would feed itself.
+                    _self_sync.discard(key)
+                    continue
+                geometry = True
+                if key in _border_recent:
+                    _edit_dirty.add(key)
+            elif not update.is_updated_transform:
+                continue
+            keys.add(update.id.original.as_pointer())
+        return keys, geometry
+    except Exception:
+        return None, True
+
+
+def _invalidate(cache, keys):
+    """Drop only what actually changed, and say whether anything was dropped.
 
     Clearing everything meant that moving one object recomputed the border
     edges of every object in the scene, which is what made heavy files crawl.
     """
-    if depsgraph is None:
+    if keys is None:
+        had = bool(cache)
         cache.clear()
-        return
-    try:
-        updates = list(depsgraph.updates)
-    except Exception:
-        cache.clear()
-        return
-    for update in updates:
-        if not (update.is_updated_geometry or update.is_updated_transform):
-            continue
-        try:
-            cache.pop(update.id.original.as_pointer(), None)
-        except Exception:
-            cache.clear()
-            return
+        return had
+    dropped = False
+    for key in keys:
+        if cache.pop(key, None) is not None:
+            dropped = True
+    return dropped
 
 
 def _clear_all_caches(*args):
@@ -447,16 +527,123 @@ def _clear_all_caches(*args):
     _cage_cache.clear()
     _border_cache.clear()
     _border_recent.clear()
+    _edit_dirty.clear()
+    _self_sync.clear()
     _cage_batches.clear()
     _border_batches.clear()
+    _scans.clear()
     _generation[0] += 1
+    _scan_gen[0] += 1
 
 
-def _clear_border_cache(scene=None, depsgraph=None):
-    _invalidate(_border_cache, depsgraph)
-    _border_batches.clear()
+# ------------------------------------------------ which objects to draw
+#
+# Both overlays used to walk every object of the view layer on every redraw
+# of every viewport — visible_get, select_get, the modifier stack — and then
+# concatenate twelve hundred arrays, only to find that the GPU batch built on
+# the previous frame was still good. On 1200 objects that was 3.8 ms for the
+# borders and 3.2 ms for the cage, per frame, with nothing changing.
+#
+# The walk is done once and kept until the depsgraph reports something that
+# could change its outcome (see _on_depsgraph), with a time limit as a safety
+# net for whatever Blender does not report. A frame where nothing changed
+# then costs a few dictionary lookups and one batch.draw.
+
+_scan_gen = [0]
+# One scan per 3D viewport: visible_get() answers for the viewport in the
+# context, so a viewport in Local View sees a different set of objects than
+# its neighbour, and a shared scan flipped between the two on every frame.
+_scans = {}
+SCAN_REFRESH_S = 0.5
+
+
+def _space_key(context):
+    space = getattr(context, "space_data", None)
+    try:
+        return space.as_pointer() if space is not None else 0
+    except Exception:
+        return 0
+
+
+def _per_space(stores, context):
+    """The store of this viewport, created on first use."""
+    key = _space_key(context)
+    store = stores.get(key)
+    if store is None:
+        store = stores[key] = {}
+    return store
+
+
+def _scan_objects(context):
+    now = time.monotonic()
+    _scan = _per_space(_scans, context)
+    if (_scan.get("gen") == _scan_gen[0]
+            and now - _scan.get("at", 0.0) < SCAN_REFRESH_S):
+        return _scan
+    view_layer = context.view_layer
+    every, selected, cage = [], [], []
+    for o in view_layer.objects:
+        if o.type != "MESH" or not o.visible_get():
+            continue
+        key = _cache_key(o)
+        if key is None:
+            continue
+        chosen = o.select_get()
+        every.append((o, key))
+        if chosen:
+            selected.append((o, key))
+        # In Edit Mode Blender already draws the cage, with its own vertex,
+        # edge and face selection colors. Drawing ours on top hides them.
+        if o.mode != "EDIT" and any(
+                m.type == "SUBSURF" and m.show_viewport for m in o.modifiers):
+            cage.append((o, key, chosen))
+    active = view_layer.objects.active
+    if (active is not None and active.type == "MESH"
+            and not active.select_get() and active.visible_get()):
+        key = _cache_key(active)
+        if key is not None:
+            selected.append((active, key))
+    _scan.update(gen=_scan_gen[0], at=now, all=tuple(every),
+                 selected=tuple(selected), cage=tuple(cage))
+    return _scan
+
+
+def _on_depsgraph(scene=None, depsgraph=None):
+    """One handler for both overlays instead of two reading the same updates.
+
+    The GPU batches are only dropped when a cached object was actually
+    invalidated. Every depsgraph update used to bump the generation and
+    throw the batches away — four times for a single click on an object,
+    measured — so selecting anything rebuilt the whole overlay for nothing.
+    """
+    keys, geometry = _changed_keys(depsgraph)
+    # Which objects the overlays look at depends on visibility, selection
+    # and modifiers. Those arrive as updates carrying no transform and no
+    # geometry — or as geometry updates, when a modifier is added — and a
+    # pure transform update, the drag of one object, is neither. So the
+    # object scan is only marked stale in the first two cases, and dragging
+    # never triggers a pass over the whole scene.
+    if keys is None or not keys or geometry:
+        _scan_gen[0] += 1
+    if keys is not None and not keys:
+        return
+    border = _invalidate(_border_cache, keys)
+    cage = _invalidate(_cage_cache, keys)
+    if border or cage:
+        _generation[0] += 1
+        _border_batches.clear()
+        _cage_batches.clear()
     if len(_border_recent) > 64:
         _border_recent.clear()
+        _edit_dirty.clear()
+
+
+def _clear_border_cache(*args):
+    _border_cache.clear()
+    _border_batches.clear()
+    _border_recent.clear()
+    _edit_dirty.clear()
+    _generation[0] += 1
 
 
 def _border_edges(mesh):
@@ -483,20 +670,47 @@ def _border_coords(obj, context):
 
     coords = EMPTY_COORDS
     fresh_at = None
+    temp = False
     try:
         if obj.mode == "EDIT" and obj.type == "MESH":
             # While editing, the geometry lives in the BMesh and the evaluated
             # mesh comes back empty — reading it there drew nothing at all.
-            # Syncing writes the edit cage into the mesh, which then reads at
-            # attribute speed.
+            # Syncing writes the edit cage into the mesh; but a mesh in Edit
+            # Mode exposes no attribute layers at all (mesh.attributes is
+            # empty), so every read fell back on the collection wrappers:
+            # 50 ms on 290k edges, against 1.3 ms for the same mesh in Object
+            # Mode. to_mesh() after the sync hands back the same data as a
+            # plain mesh, attributes included, and the whole read is 3.6 ms.
             now = time.monotonic()
-            last, stale = _border_recent.get(key, (0.0, None))
-            if stale is not None and now - last < EDIT_REFRESH_S:
-                _border_cache[key] = stale
-                return stale
-            obj.update_from_editmode()
-            mesh = obj.data
+            last, stale, wait = _border_recent.get(key, (0.0, None, 0.0))
+            if stale is not None:
+                if key not in _edit_dirty:
+                    # Nothing changed since the last refresh: sitting still
+                    # in Edit Mode costs nothing.
+                    _border_cache[key] = stale
+                    return stale
+                if now - last < wait:
+                    # Changed, but too soon: keep the last result and come
+                    # back when the interval is over, even if the mouse has
+                    # stopped by then and nothing else asks for a redraw.
+                    _border_cache[key] = stale
+                    _redraw_later(wait - (now - last))
+                    return stale
             fresh_at = now
+            _edit_dirty.discard(key)
+            # The size check comes before the sync: syncing a mesh too big
+            # to draw, several times a second, was the one cost left on it.
+            if len(obj.data.edges) > MAX_EDGES:
+                mesh = None
+            else:
+                _self_sync.add(key)
+                obj.update_from_editmode()
+                mesh = obj.to_mesh()
+                temp = True
+                if mesh is None or len(mesh.edges) != len(obj.data.edges):
+                    obj.to_mesh_clear()
+                    temp = False
+                    mesh = obj.data
         else:
             # The evaluated object already carries its mesh; to_mesh() would
             # hand back a copy of it, which costs time and memory for nothing.
@@ -510,11 +724,45 @@ def _border_coords(obj, context):
                 coords = _to_world(co, pairs, obj.matrix_world)
     except Exception:
         coords = EMPTY_COORDS
+    finally:
+        if temp:
+            try:
+                obj.to_mesh_clear()
+            except Exception:
+                pass
 
     _border_cache[key] = coords
     if fresh_at is not None:
-        _border_recent[key] = (fresh_at, coords)
+        cost = time.monotonic() - fresh_at
+        wait = min(EDIT_REFRESH_MAX_S, max(EDIT_REFRESH_MIN_S,
+                                           cost * EDIT_REFRESH_RATIO))
+        _border_recent[key] = (fresh_at, coords, wait)
     return coords
+
+
+_redraw_timer = {"at": 0.0}
+
+
+def _redraw_later(delay):
+    """One redraw of every 3D viewport after the delay, coalesced.
+
+    A refresh deferred by the interval needs a redraw to be picked up; if
+    the mouse stops before then, nothing else would ask for one and the
+    border would stay behind until the next event.
+    """
+    due = time.monotonic() + delay
+    if _redraw_timer["at"] > time.monotonic() and _redraw_timer["at"] <= due:
+        return
+    _redraw_timer["at"] = due
+
+    def fire():
+        _redraw_timer["at"] = 0.0
+        _redraw_view3d()
+        return None
+    try:
+        bpy.app.timers.register(fire, first_interval=max(0.005, delay))
+    except Exception:
+        pass
 
 
 def _draw_borders():
@@ -527,44 +775,45 @@ def _draw_borders():
     if region is None:
         return
 
-    view_layer = context.view_layer
-    if scene.landfall_border_selected_only:
-        objs = [o for o in context.selected_objects if o.type == "MESH"]
-        active = view_layer.objects.active
-        if active is not None and active.type == "MESH" and active not in objs:
-            objs.append(active)
-    else:
-        objs = [o for o in view_layer.objects if o.type == "MESH" and o.visible_get()]
+    scan = _scan_objects(context)
+    objs = scan["selected"] if scene.landfall_border_selected_only else scan["all"]
 
-    # Finding the open edges of an object that is not cached yet costs a
-    # couple of milliseconds. Six hundred of them at once would freeze the
-    # viewport for a second, so a budget of fresh objects is done per redraw
-    # and the rest arrive over the next few frames.
-    parts = []
-    signature = []
-    budget = BORDER_BUDGET
-    for o in objs:
-        if not o.visible_get():
-            continue
-        key = _cache_key(o)
-        if key is None:
-            continue
-        if key not in _border_cache:
-            if budget <= 0:
+    shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
+    store = _per_space(_border_batches, context)
+
+    # An object being edited refreshes on its own clock. Its part of the
+    # signature is the time of its last refresh, so the batch is rebuilt
+    # when a refresh happened and not otherwise. The refresh itself is
+    # asked for first, because it is what moves that stamp.
+    edit_keys = [k for o, k in objs if o.mode == "EDIT"]
+    for o, key in objs:
+        if o.mode == "EDIT" and key not in _border_cache:
+            _border_coords(o, context)
+    stamps = tuple(_border_recent.get(k, (0.0,))[0] for k in edit_keys)
+    signature = (_generation[0], tuple(k for _o, k in objs), stamps)
+    if store.get("signature") != signature:
+        # Finding the open edges of an object that is not cached yet costs
+        # a couple of milliseconds. Six hundred of them at once would freeze
+        # the viewport for a second, so fresh objects are done within a time
+        # budget per redraw and the rest arrive over the next few frames.
+        parts = []
+        done = []
+        deadline = time.monotonic() + BORDER_BUDGET_S
+        for o, key in objs:
+            if key not in _border_cache and time.monotonic() > deadline:
                 if context.area:
                     context.area.tag_redraw()
                 continue
-            budget -= 1
-        parts.append(_border_coords(o, context))
-        signature.append(key)
-
-    coords = _join(parts)
-    if not len(coords):
+            parts.append(_border_coords(o, context))
+            done.append(key)
+        coords = _join(parts)
+        stamps = tuple(_border_recent.get(k, (0.0,))[0] for k in edit_keys)
+        signature = (_generation[0], tuple(done), stamps)
+        batch = _batches(store, shader, signature, coords)[0]
+    else:
+        batch = store["batches"][0]
+    if batch is None:
         return
-
-    shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
-    batch = _batches(_border_batches, shader,
-                     (_generation[0], tuple(signature)), coords)[0]
 
     gpu.state.blend_set("ALPHA")
     gpu.state.depth_test_set("LESS_EQUAL")
@@ -573,40 +822,15 @@ def _draw_borders():
     shader.uniform_float("viewportSize", (region.width, region.height))
     shader.uniform_float("lineWidth", scene.landfall_border_width)
     shader.uniform_float("color", scene.landfall_border_color)
-    if batch is not None:
-        batch.draw(shader)
+    batch.draw(shader)
 
     gpu.state.depth_test_set("NONE")
     gpu.state.blend_set("NONE")
 
 
-def _enable_overlay():
-    global _draw_handle
-    if _draw_handle is None:
-        _draw_handle = bpy.types.SpaceView3D.draw_handler_add(
-            _draw_borders, (), "WINDOW", "POST_VIEW"
-        )
-
-
-def _disable_overlay():
-    global _draw_handle
-    if _draw_handle is not None:
-        try:
-            bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, "WINDOW")
-        except Exception:
-            pass
-        _draw_handle = None
-
-
 def _border_show_update(self, context):
     _clear_border_cache()
-    if self.landfall_border_show:
-        _enable_overlay()
-    else:
-        _disable_overlay()
-    for area in context.window.screen.areas:
-        if area.type == "VIEW_3D":
-            area.tag_redraw()
+    _redraw_view3d(context)
 
 
 def _grid_sync(*args):
@@ -621,11 +845,6 @@ def _grid_sync(*args):
     except Exception:
         return
     on = getattr(scene, "landfall_grid_finite", False)
-
-    if on:
-        _grid_enable()
-    else:
-        _grid_disable()
     _set_native_grid(not on)
 
 
@@ -693,7 +912,15 @@ SHEET_BLENDER = (
 )
 
 _sheet = {"handle": None, "x": 60.0, "y": 120.0, "close": None,
-          "drag": None, "running": False, "w": 0.0, "h": 0.0}
+          "drag": None, "running": False, "w": 0.0, "h": 0.0,
+          "rows": None, "rows_at": 0.0, "rows_nav": None}
+
+# The sheet reads every key from the live keymap, which is the point of it,
+# but a full scan of the user configuration is four thousand entries and
+# sixteen of them per redraw cost 6 ms, measured. Keymaps do not change while
+# you drag a card around, so the rows are kept this long before being read
+# again.
+SHEET_REFRESH_S = 2.0
 
 
 def _find_kmi(idname, props=None, attrs=None):
@@ -785,25 +1012,31 @@ def _draw_sheet():
     if p is not None:
         nav_on = p.maya_navigation
 
-    left = [("Landfall", [(lbl, _find_kmi(op, pr, at) or "not set")
-                          for lbl, op, pr, at in SHEET_LANDFALL])]
-    nav_rows = [(lbl, (_find_kmi(op, pr, at) or "not set") if nav_on else "off")
-                for lbl, op, pr, at in SHEET_NAV]
-    left.append(("Maya navigation", nav_rows))
-    left.append(("In the panel", list(SHEET_PANEL)))
-    right = [("Blender essentials", list(SHEET_BLENDER))]
+    now = time.monotonic()
+    if (_sheet["rows"] is None or _sheet["rows_nav"] != nav_on
+            or now - _sheet["rows_at"] > SHEET_REFRESH_S):
+        left = [("Landfall", [(lbl, _find_kmi(op, pr, at) or "not set")
+                              for lbl, op, pr, at in SHEET_LANDFALL])]
+        nav_rows = [(lbl, (_find_kmi(op, pr, at) or "not set")
+                     if nav_on else "off")
+                    for lbl, op, pr, at in SHEET_NAV]
+        left.append(("Maya navigation", nav_rows))
+        left.append(("In the panel", list(SHEET_PANEL)))
+        right = [("Blender essentials", list(SHEET_BLENDER))]
+        _sheet["rows"] = (left, right)
+        _sheet["rows_at"] = now
+        _sheet["rows_nav"] = nav_on
+    left, right = _sheet["rows"]
 
     def measure(cols):
         lbl_w = key_w = 0.0
         rows = 0
         for title, items in cols:
-            blf.size(font, s_head)
-            lbl_w = max(lbl_w, _text_w(font, size, title))
+            lbl_w = max(lbl_w, _text_w(font, s_head, title))
             rows += 1
             for lbl, key in items:
-                blf.size(font, s_row)
-                lbl_w = max(lbl_w, _text_w(font, size, lbl))
-                key_w = max(key_w, _text_w(font, size, key))
+                lbl_w = max(lbl_w, _text_w(font, s_row, lbl))
+                key_w = max(key_w, _text_w(font, s_row, key))
                 rows += 1
         return lbl_w, key_w, rows
 
@@ -852,7 +1085,7 @@ def _draw_sheet():
                 blf.position(font, cx0, yy, 0)
                 blf.draw(font, lbl)
                 blf.color(font, *(dim if (greyed or key in ("not set", "off")) else muted))
-                kw = _text_w(font, size, key)
+                kw = _text_w(font, s_row, key)
                 blf.position(font, cx0 + col_w - kw, yy, 0)
                 blf.draw(font, key)
                 yy -= row_h
@@ -873,6 +1106,7 @@ def _sheet_stop():
     _sheet["handle"] = None
     _sheet["running"] = False
     _sheet["drag"] = None
+    _sheet["rows"] = None
 
 
 # Sampled from a Maya screenshot: background #5C5C5C, selection #43FFA3,
@@ -969,8 +1203,6 @@ def _theme_is_maya(v3d):
 
 
 def _theme_snapshot(v3d, ui=None):
-    import json
-
     data = {}
     if ui is not None:
         for name in HIGHLIGHT_WIDGETS:
@@ -1106,24 +1338,6 @@ class LANDFALL_OT_object_color(bpy.types.Operator):
                 space.shading.color_type = "OBJECT"
 
         self.report({"INFO"}, "Colored %d objects" % len(objs))
-        return {"FINISHED"}
-
-
-class LANDFALL_OT_grid_shade(bpy.types.Operator):
-    bl_idname = "landfall.grid_shade"
-    bl_label = "Grid shade"
-    bl_description = "Write the grid brightness into the theme"
-    bl_options = {"INTERNAL"}
-
-    value: bpy.props.FloatProperty(default=0.19, min=0.0, max=1.0)
-
-    def execute(self, context):
-        try:
-            v3d = context.preferences.themes[0].view_3d
-        except Exception:
-            return {"CANCELLED"}
-        v = self.value
-        v3d.grid = (v, v, v, 1.0)
         return {"FINISHED"}
 
 
@@ -1279,8 +1493,6 @@ def _theme_restore(context, theme, p):
     nothing reliable to go back to — Blender's factory values differ per
     widget — so the job is handed to Blender's own reset.
     """
-    import json
-
     raw = _theme_backup_read(p)
     if "ui:" not in raw:
         if not _safe(bpy.ops.preferences.reset_default_theme):
@@ -1482,9 +1694,7 @@ class LANDFALL_OT_cheatsheet(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def _redraw(self, context):
-        for area in context.window.screen.areas:
-            if area.type == "VIEW_3D":
-                area.tag_redraw()
+        _redraw_view3d(context)
 
     def modal(self, context, event):
         if not _sheet["running"]:
@@ -1854,7 +2064,9 @@ def _mm_layout(context):
                     top - total_h + border, max(1.0, scale),
                     total_h - border * 2) if two else None,
     }
-    _mm["rects"] = [(c["key"], c["x"], c["y"], c["w"], c["h"]) for c in chips]         + [(r["key"], r["x"], r["y"], r["w"], r["h"]) for r in rows]
+    _mm["rects"] = (
+        [(c["key"], c["x"], c["y"], c["w"], c["h"]) for c in chips]
+        + [(r["key"], r["x"], r["y"], r["w"], r["h"]) for r in rows])
 
     lay = _mm["layout"]
     plain = [(c["x"], c["y"], c["w"], c["h"]) for c in chips if not c["branch"]]
@@ -1871,7 +2083,6 @@ def _mm_layout(context):
     lay["batch_branch"] = _rects_batch(branchy)
     lay["batch_open"] = _rects_batch(opened)
     lay["batch_mark"] = _rects_batch(marks)
-    lay["batch_open"] = _rects_batch(opened)
     lay["batch_border"] = _rects_batch(
         [(px - edge, py - edge, pw + edge * 2, ph + edge * 2)])
     lay["batch_panel"] = _rects_batch([(px, py, pw, ph)])
@@ -1931,13 +2142,11 @@ def _mm_draw():
     # showed through the panel where the two crossed.
     paint(lay["batch_plain"], back)
     paint(lay["batch_branch"], accent)
-    paint(lay["batch_open"], (min(1.0, accent[0] * 1.6),
-                              min(1.0, accent[1] * 1.35),
-                              min(1.0, accent[2] * 1.2), 1.0))
-    paint(lay["batch_mark"], (1.0, 1.0, 1.0, 0.85))
     # The branch you have open is brighter, so you can tell where you are
-    # even when the panel covers half the ring.
+    # even when the panel covers half the ring. It used to be painted twice
+    # with two colors, the second over the first.
     paint(lay["batch_open"], (0.28, 0.66, 0.80, 1.0))
+    paint(lay["batch_mark"], (1.0, 1.0, 1.0, 0.85))
     if hot_rect is not None and hot[0] == "radial":
         paint(hot_ring, HOT_EDGE)
         paint(hot_rect, HOT_FILL)
@@ -2069,6 +2278,42 @@ class LANDFALL_OT_self_check(bpy.types.Operator):
                 "press Restore on that entry in Preferences > Keymap"
                 % (km.name, native, expected))
 
+        # Every keymap name we write into must exist in Blender's own
+        # configuration: keymaps.new() creates a missing one silently, and
+        # the entries in it never fire. "Grease Pencil Stroke Edit Mode"
+        # was such a ghost after the keymap was renamed.
+        kc = context.window_manager.keyconfigs
+        stock = {km.name for km in kc.default.keymaps} if kc.default else set()
+        wanted = {name for name, _s in NAV_MODE_KEYMAPS}
+        wanted |= {row[0] for row in MAYA_NAV_EXTRA}
+        wanted |= {name for name, _s in KEYMAP_TARGETS} | {"Window", "Curve"}
+        for name in sorted(wanted - stock):
+            check(False, "keymap '%s' does not exist in this Blender" % name)
+
+        # Our shortcuts that sit on top of one of Blender's own, in the same
+        # keymap. The ones listed in SHADOWS_INTENDED are replacements made
+        # on purpose and documented; anything else is worth knowing about.
+        notes = []
+        if kc.addon and kc.default:
+            for km in kc.addon.keymaps:
+                dkm = kc.default.keymaps.get(km.name)
+                if dkm is None:
+                    continue
+                for k in km.keymap_items:
+                    if not (_keymap_is_ours(k) or k.idname in NAV_IDNAMES):
+                        continue
+                    for d in dkm.keymap_items:
+                        if d.active and _kmi_signature(d) == _kmi_signature(k):
+                            pair = (km.name, k.type, bool(k.ctrl),
+                                    bool(k.alt), bool(k.shift))
+                            if pair not in SHADOWS_INTENDED and not (
+                                    k.alt and k.type.endswith("MOUSE")):
+                                notes.append("NOTE  %s: our %s on %s hides "
+                                             "Blender's %s" % (km.name, k.idname,
+                                                                k.to_string(),
+                                                                d.idname))
+        lines.extend(notes)
+
         lines.insert(2, "RESULT: %s" % ("all passed" if not bad
                                         else "%d problems" % bad))
         block = bpy.data.texts.get("landfall_self_check")
@@ -2198,7 +2443,11 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
             bm.select_flush(True)
         except Exception as err:
             # A failure here leaves the mesh half-built, and the caller has no
-            # way to know. Say so instead of reporting success.
+            # way to know. Say so instead of reporting success — and push the
+            # bmesh back anyway, or the viewport shows a mesh that no longer
+            # matches the data until the next edit.
+            bmesh.update_edit_mesh(obj.data, loop_triangles=True,
+                                   destructive=True)
             self.report({"ERROR"}, "Extrude failed: %s" % err)
             return {"CANCELLED"}
 
@@ -2356,7 +2605,59 @@ def _define_macro():
         print("[landfall] could not build the extrude macro: %s" % err)
 
 
+def _remove_kmis(items):
+    """Take our entries out of the add-on keymaps and forget them."""
+    for km, kmi in items:
+        try:
+            km.keymap_items.remove(kmi)
+        except Exception:
+            pass
+    items.clear()
+
+
 _extrude_keymaps = []
+
+NATIVE_EXTRUDE = "view3d.edit_mesh_extrude_move_normal"
+
+
+def _user_keymap(name):
+    try:
+        return bpy.context.window_manager.keyconfigs.user.keymaps.get(name)
+    except Exception:
+        return None
+
+
+def _set_native_extrude(active):
+    """Blender's own E in the Mesh keymap, muted or back on.
+
+    One place for it: the enable path and the post-rebuild path used to carry
+    the same five-line filter each, and two copies of a filter drift apart.
+    """
+    km = _user_keymap("Mesh")
+    if km is None:
+        return
+    for k in km.keymap_items:
+        if (k.idname == NATIVE_EXTRUDE and k.type == "E"
+                and not (k.ctrl or k.alt or k.shift or k.oskey)):
+            k.active = active
+
+
+def _set_native_loop_select(active):
+    """Blender's Alt+click loop and ring select, muted or back on.
+
+    Only the click entries on Alt: the double-click ones in the same keymap
+    are ours, mirrored there by Blender, and muting by idname alone took
+    them down with the rest. That is how loop select on double click ended
+    up silently off — and stayed off, because the user keymap is saved.
+    """
+    for name, idname in MAYA_NAV_MUTE:
+        km = _user_keymap(name)
+        if km is None:
+            continue
+        for k in km.keymap_items:
+            if (k.idname == idname and k.type == "LEFTMOUSE"
+                    and k.value != "DOUBLE_CLICK" and k.alt):
+                k.active = active
 
 
 def _extrude_enable(context):
@@ -2368,12 +2669,7 @@ def _extrude_enable(context):
     kc = context.window_manager.keyconfigs.addon
     if kc is None:
         return
-    user = context.window_manager.keyconfigs.user.keymaps.get("Mesh")
-    if user is not None:
-        for k in user.keymap_items:
-            if (k.idname == "view3d.edit_mesh_extrude_move_normal"
-                    and k.type == "E" and not (k.ctrl or k.alt or k.shift)):
-                k.active = False
+    _set_native_extrude(False)
     try:
         km = kc.keymaps.new(name="Mesh", space_type="EMPTY")
         kmi = km.keymap_items.new("landfall.extrude_move", "E", "PRESS")
@@ -2384,20 +2680,8 @@ def _extrude_enable(context):
 
 
 def _extrude_disable():
-    for km, kmi in _extrude_keymaps:
-        try:
-            km.keymap_items.remove(kmi)
-        except Exception:
-            pass
-    _extrude_keymaps.clear()
-    try:
-        user = bpy.context.window_manager.keyconfigs.user.keymaps.get("Mesh")
-        if user is not None:
-            for k in user.keymap_items:
-                if k.idname == "view3d.edit_mesh_extrude_move_normal":
-                    k.active = True
-    except Exception:
-        pass
+    _remove_kmis(_extrude_keymaps)
+    _set_native_extrude(True)
 
 
 def _extrude_update(self, context):
@@ -2564,27 +2848,6 @@ class LANDFALL_OT_select_mode_multi(bpy.types.Operator):
         return {"FINISHED"}
 
 
-#
-# Blender's pie menus are radial only, and opening a second one replaces the
-# first. Maya shows the radial and the list at once and never loses the parent.
-# That cannot be built from native pies, so this draws its own.
-
-
-# Eight directions in the order Blender uses for pies: W E S N NW NE SW SE
-MM_DIRS = ((-142, 0), (142, 0), (0, 96), (0, -96),
-           (-106, -66), (106, -66), (-106, 66), (106, 66))
-
-# Bottom of the ring is the south chip at 96 plus half its height; the list
-# starts below that with a little air.
-MM_LIST_TOP = 122
-
-# Colors of the menu. The hover pair is deliberately louder than the branch
-# accent: what a click is about to do has to be unmistakable.
-MM_ACCENT = (0.16, 0.48, 0.61, 0.95)
-HOT_FILL = (0.24, 0.68, 0.88, 1.0)
-HOT_EDGE = (1.0, 1.0, 1.0, 0.55)
-
-
 # ------------------------------------------------------- Maya navigation
 
 # Navigation has to be registered in every mode keymap: in Sculpt and the
@@ -2604,7 +2867,7 @@ NAV_MODE_KEYMAPS = (
     ("Image Paint", "EMPTY"),
     ("Pose", "EMPTY"),
     ("Particle", "EMPTY"),
-    ("Grease Pencil Stroke Edit Mode", "EMPTY"),
+    ("Grease Pencil Edit Mode", "EMPTY"),
 )
 
 NAV_ITEMS = (
@@ -2628,7 +2891,6 @@ MAYA_NAV_MUTE = (
 )
 
 _nav_keymaps = []
-_nav_muted = []
 
 
 def _apply_navigation_prefs(context):
@@ -2681,27 +2943,39 @@ def _gizmos_apply(state):
                 setattr(space, flag, state)
         except Exception:
             continue
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == "VIEW_3D":
-                area.tag_redraw()
+    _redraw_view3d()
 
 
 def _gizmos_update(self, context):
     _gizmos_apply(self.maya_gizmos)
 
 
+# Same rounds as the keymap repair, for the same reason. A single pass 0.2 s
+# after registering was enough on Windows and not on macOS, where nine
+# viewports out of ten still had the transform gizmos off with the preference
+# on: whatever builds the workspaces had not finished. Looking again a few
+# times costs nothing and removes the guesswork about how long to wait.
+_gizmos_attempts = [0]
+GIZMO_ROUNDS = 6
+GIZMO_WAIT = 1.5
+
+
 def _gizmos_sync():
-    """Deferred, and again after loading a file: a new file brings its own
-    workspaces, each with its own gizmo settings."""
+    """Deferred, repeated, and again after loading a file: a new file brings
+    its own workspaces, each with its own gizmo settings."""
     p = prefs(bpy.context)
     if p is not None and p.maya_gizmos:
         _gizmos_apply(True)
-    return None
+    _gizmos_attempts[0] += 1
+    if _gizmos_attempts[0] >= GIZMO_ROUNDS:
+        return None
+    return GIZMO_WAIT
 
 
 def _gizmos_load(*args):
-    bpy.app.timers.register(_gizmos_sync, first_interval=0.1)
+    """Start the rounds again: a new file brings its own workspaces."""
+    _gizmos_attempts[0] = 0
+    _start_timer(_gizmos_sync, 0.1)
 
 
 def _reapply_mutes():
@@ -2711,29 +2985,40 @@ def _reapply_mutes():
     switching a preference off restores it. A rebuild undoes those mutings,
     so they are applied again — and only for the preferences that are on.
     """
-    context = bpy.context
-    p = prefs(context)
+    p = prefs(bpy.context)
     if p is None:
         return
     try:
         if p.maya_navigation:
-            for name, idname in MAYA_NAV_MUTE:
-                km = context.window_manager.keyconfigs.user.keymaps.get(name)
-                if km is None:
-                    continue
-                for k in km.keymap_items:
-                    if k.idname == idname:
-                        k.active = False
+            _set_native_loop_select(False)
+            _wake_user_kmi("mesh.loop_select", value="DOUBLE_CLICK")
+            _wake_user_kmi("mesh.edgering_select", value="DOUBLE_CLICK")
         if p.maya_extrude:
-            km = context.window_manager.keyconfigs.user.keymaps.get("Mesh")
-            if km is not None:
-                for k in km.keymap_items:
-                    if (k.idname == "view3d.edit_mesh_extrude_move_normal"
-                            and k.type == "E"
-                            and not (k.ctrl or k.alt or k.shift)):
-                        k.active = False
+            _set_native_extrude(False)
+            _wake_user_kmi("landfall.extrude_move")
     except Exception as err:
         print("[landfall] could not re-apply the keymap mutings: %s" % err)
+
+
+def _kmi_signature(kmi):
+    return (kmi.type, kmi.value, bool(kmi.ctrl), bool(kmi.alt),
+            bool(kmi.shift), bool(kmi.oskey))
+
+
+# Blender entries we mute or replace on purpose; the self check does not
+# report these. Alt plus a mouse button is the Maya navigation itself and is
+# skipped by rule, since it shadows a brush or a select in every paint mode.
+# Keymap name, key, ctrl, alt, shift — not to_string(), which spells the
+# modifiers with symbols on macOS and with words on Windows.
+SHADOWS_INTENDED = {
+    ("Mesh", "E", False, False, False),
+    ("Window", "O", True, False, False),
+    ("Window", "S", True, False, True),
+}
+
+NAV_IDNAMES = {idname for idname, _k, _m in NAV_ITEMS} | {
+    row[2] for row in MAYA_NAV_EXTRA} | {"object.delete", "curve.delete",
+                                         "wm.call_menu"}
 
 
 def _keymap_is_ours(kmi):
@@ -2796,7 +3081,9 @@ def _keymap_heal():
     its entries reports nothing anywhere.
     """
     p = prefs(bpy.context)
-    if p is not None and not p.heal_keymaps:
+    if p is None or not p.heal_keymaps:
+        # No preferences means the add-on has been disabled while the timer
+        # was still pending: nothing to repair on its behalf.
         return None
 
     ricostruite = 0
@@ -2825,7 +3112,7 @@ def _keymap_heal():
 def _keymap_heal_load(*args):
     """Start the rounds again: a new file brings its own configuration."""
     _heal_attempts[0] = 0
-    bpy.app.timers.register(_keymap_heal, first_interval=0.4)
+    _start_timer(_keymap_heal, 0.4)
 
 
 def _maya_nav_enable(context):
@@ -2833,15 +3120,7 @@ def _maya_nav_enable(context):
     if kc is None:
         return
 
-    for name, idname in MAYA_NAV_MUTE:
-        km = context.window_manager.keyconfigs.user.keymaps.get(name)
-        if km is None:
-            continue
-        for kmi in km.keymap_items:
-            if (kmi.idname == idname and kmi.alt
-                    and kmi.type == "LEFTMOUSE" and kmi.active):
-                kmi.active = False
-                _nav_muted.append(kmi)
+    _set_native_loop_select(False)
 
     for km_name, space in NAV_MODE_KEYMAPS:
         try:
@@ -2860,36 +3139,18 @@ def _maya_nav_enable(context):
         kmi = km.keymap_items.new(idname, key, value, **mods)
         _nav_keymaps.append((km, kmi))
 
+    # The mirrored user copies are what Blender actually runs, and a copy
+    # muted by an earlier version stays muted in the saved preferences.
+    _wake_user_kmi("mesh.loop_select", value="DOUBLE_CLICK")
+    _wake_user_kmi("mesh.edgering_select", value="DOUBLE_CLICK")
+    _wake_user_kmi("view3d.view_selected", keymap="Object Mode", key="F")
     _apply_navigation_prefs(context)
 
 
 def _maya_nav_disable():
-    for km, kmi in _nav_keymaps:
-        try:
-            km.keymap_items.remove(kmi)
-        except Exception:
-            pass
-    _nav_keymaps.clear()
-
-    _nav_muted.clear()
-
+    _remove_kmis(_nav_keymaps)
     # Same reason as the marking menu: restore by scanning, not from memory.
-    try:
-        user = bpy.context.window_manager.keyconfigs.user
-    except Exception:
-        return
-    if user is None:
-        return
-    for name, idname in MAYA_NAV_MUTE:
-        km = user.keymaps.get(name)
-        if km is None:
-            continue
-        for kmi in km.keymap_items:
-            if kmi.idname == idname and not kmi.active:
-                try:
-                    kmi.active = True
-                except Exception:
-                    pass
+    _set_native_loop_select(True)
 
 
 def _maya_nav_update(self, context):
@@ -2905,9 +3166,7 @@ class LANDFALL_OT_border_refresh(bpy.types.Operator):
 
     def execute(self, context):
         _clear_border_cache()
-        for area in context.window.screen.areas:
-            if area.type == "VIEW_3D":
-                area.tag_redraw()
+        _redraw_view3d(context)
         return {"FINISHED"}
 
 
@@ -3163,7 +3422,6 @@ def _wire_reset(*args):
 
 # ------------------------------------------------------------ finite grid
 
-_grid_handle = None
 
 
 # The grid only changes when its size or cell size does, so both the points
@@ -3175,14 +3433,18 @@ _grid_cache = {"key": None, "coords": None, "batches": None}
 def _grid_coords(size, cell):
     """A Maya-style bounded grid on the XY plane, plus its two axis lines."""
     half = size * cell * 0.5
-    plain, axis_x, axis_y = [], [], []
+    plain = []
     for i in range(size + 1):
         v = -half + i * cell
-        near = abs(v) < cell * 0.001
-        line_a = ((v, -half, 0.0), (v, half, 0.0))
-        line_b = ((-half, v, 0.0), (half, v, 0.0))
-        (axis_y if near else plain).extend(line_a)
-        (axis_x if near else plain).extend(line_b)
+        if abs(v) < cell * 0.001:
+            continue
+        plain.extend(((v, -half, 0.0), (v, half, 0.0)))
+        plain.extend(((-half, v, 0.0), (half, v, 0.0)))
+    # The two axes are drawn on their own, whatever the cell count: with an
+    # odd number of cells no grid line passes through the origin, and the
+    # axes simply went missing — with Blender's own switched off as well.
+    axis_x = [(-half, 0.0, 0.0), (half, 0.0, 0.0)]
+    axis_y = [(0.0, -half, 0.0), (0.0, half, 0.0)]
     return plain, axis_x, axis_y
 
 
@@ -3247,24 +3509,6 @@ def _draw_grid():
     gpu.state.blend_set("NONE")
 
 
-def _grid_enable():
-    global _grid_handle
-    if _grid_handle is None:
-        _grid_handle = bpy.types.SpaceView3D.draw_handler_add(
-            _draw_grid, (), "WINDOW", "POST_VIEW"
-        )
-
-
-def _grid_disable():
-    global _grid_handle
-    if _grid_handle is not None:
-        try:
-            bpy.types.SpaceView3D.draw_handler_remove(_grid_handle, "WINDOW")
-        except Exception:
-            pass
-        _grid_handle = None
-
-
 # The floor and the two axis lines both draw to infinity, and ours already stop
 # at the edge of the grid, so the native ones go off together.
 #
@@ -3285,28 +3529,22 @@ def _set_native_grid(on):
 
 
 def _grid_finite_update(self, context):
-    on = self.landfall_grid_finite
-    if on:
-        _grid_enable()
-    else:
-        _grid_disable()
-    _set_native_grid(not on)
-    for area in context.window.screen.areas:
-        if area.type == "VIEW_3D":
-            area.tag_redraw()
+    _set_native_grid(not self.landfall_grid_finite)
+    _redraw_view3d(context)
 
 
 # ------------------------------------------------------------ cage overlay
 
-_cage_handle = None
 _cage_cache = {}
 
 
-def _clear_cage_cache(scene=None, depsgraph=None):
-    _invalidate(_cage_cache, depsgraph)
+def _clear_cage_cache(*args):
+    _cage_cache.clear()
     _cage_batches.clear()
+    _generation[0] += 1
 
 
+# GPU batches, one store per 3D viewport (see _per_space).
 _cage_batches = {}
 _border_batches = {}
 
@@ -3418,34 +3656,26 @@ def _draw_cage():
 
     # Maya keeps the cage visible when the object is deselected, just in a
     # dark blue instead of the selection green. Two passes, one per color.
-    selected, idle = [], []
-    signature = []
-    for obj in context.view_layer.objects:
-        if obj.type != "MESH" or not obj.visible_get():
-            continue
-        # In Edit Mode Blender already draws the cage, with its own vertex,
-        # edge and face selection colors. Drawing ours on top hides them.
-        if obj.mode == "EDIT":
-            continue
-        if not any(m.type == "SUBSURF" and m.show_viewport for m in obj.modifiers):
-            continue
-        chosen = obj.select_get()
-        if chosen:
-            selected.append(_cage_coords(obj))
-        elif not scene.landfall_cage_selected_only:
-            idle.append(_cage_coords(obj))
-        else:
-            continue
-        signature.append((_cache_key(obj), chosen))
-
-    selected = _join(selected)
-    idle = _join(idle)
-    if not len(selected) and not len(idle):
+    scan = _scan_objects(context)
+    only_selected = scene.landfall_cage_selected_only
+    entries = [(o, key, chosen) for o, key, chosen in scan["cage"]
+               if chosen or not only_selected]
+    if not entries:
         return
-    signature = (_generation[0], tuple(signature))
+    signature = (_generation[0], tuple((key, chosen) for _o, key, chosen in entries))
 
     shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
-    batches = _batches(_cage_batches, shader, signature, idle, selected)
+    store = _per_space(_cage_batches, context)
+    if store.get("signature") != signature:
+        selected, idle = [], []
+        for obj, _key, chosen in entries:
+            (selected if chosen else idle).append(_cage_coords(obj))
+        batches = _batches(store, shader, signature,
+                           _join(idle), _join(selected))
+    else:
+        batches = store["batches"]
+    if all(b is None for b in batches):
+        return
 
     gpu.state.blend_set("ALPHA")
     # Maya hides the parts of the cage that fall behind the smooth surface.
@@ -3467,33 +3697,9 @@ def _draw_cage():
     gpu.state.blend_set("NONE")
 
 
-def _cage_enable():
-    global _cage_handle
-    if _cage_handle is None:
-        _cage_handle = bpy.types.SpaceView3D.draw_handler_add(
-            _draw_cage, (), "WINDOW", "POST_VIEW"
-        )
-
-
-def _cage_disable():
-    global _cage_handle
-    if _cage_handle is not None:
-        try:
-            bpy.types.SpaceView3D.draw_handler_remove(_cage_handle, "WINDOW")
-        except Exception:
-            pass
-        _cage_handle = None
-
-
 def _cage_show_update(self, context):
     _clear_cage_cache()
-    if self.landfall_cage_show:
-        _cage_enable()
-    else:
-        _cage_disable()
-    for area in context.window.screen.areas:
-        if area.type == "VIEW_3D":
-            area.tag_redraw()
+    _redraw_view3d(context)
 
 
 # -------------------------------------------------------- smooth preview
@@ -3514,9 +3720,7 @@ def _xray_alpha_update(self, context):
                 obj.color[3] = value
         except (AttributeError, ReferenceError):
             continue
-    for area in context.window.screen.areas:
-        if area.type == "VIEW_3D":
-            area.tag_redraw()
+    _redraw_view3d(context)
 
 
 def _levels_update(self, context):
@@ -3588,7 +3792,6 @@ class LANDFALL_OT_smooth_preview(bpy.types.Operator):
                 continue
 
             m = _subsurf(o, create=True, levels=levels)
-            m.levels = levels
             m.show_viewport = True
             m.show_in_editmode = True
             m.show_only_control_edges = True
@@ -3686,12 +3889,15 @@ def prefs(context):
 _mm_keymaps = []
 
 
-def _wake_user_kmi(idname, menu=None):
+def _wake_user_kmi(idname, value=None, keymap=None, key=None):
     """Make sure the mirrored user-side entry is enabled.
 
     Blender mirrors add-on shortcuts into the user key configuration, and that
     is the copy it actually runs. A stale disabled mirror from an earlier
     install is inherited by the new one, so the key silently does nothing.
+
+    The optional filters narrow it to our own entry when the idname is one of
+    Blender's, so nothing the user disabled on purpose is switched back on.
     """
     try:
         user = bpy.context.window_manager.keyconfigs.user
@@ -3700,12 +3906,15 @@ def _wake_user_kmi(idname, menu=None):
     if user is None:
         return
     for km in user.keymaps:
+        if keymap is not None and km.name != keymap:
+            continue
         for kmi in km.keymap_items:
             if kmi.idname != idname:
                 continue
-            if menu is not None:
-                if str(getattr(kmi.properties, "name", "") or "") != menu:
-                    continue
+            if value is not None and kmi.value != value:
+                continue
+            if key is not None and kmi.type != key:
+                continue
             if not kmi.active:
                 try:
                     kmi.active = True
@@ -3745,12 +3954,7 @@ def _delete_enable(context):
 
 
 def _delete_disable():
-    for km, kmi in _del_keymaps:
-        try:
-            km.keymap_items.remove(kmi)
-        except Exception:
-            pass
-    _del_keymaps.clear()
+    _remove_kmis(_del_keymaps)
 
 
 def _delete_update(self, context):
@@ -3772,12 +3976,7 @@ def _marking_enable(context):
 
 
 def _marking_disable():
-    for km, kmi in _mm_keymaps:
-        try:
-            km.keymap_items.remove(kmi)
-        except Exception:
-            pass
-    _mm_keymaps.clear()
+    _remove_kmis(_mm_keymaps)
     _mm_stop()
 
 
@@ -4347,7 +4546,7 @@ class LANDFALL_OT_load_pbr_set(bpy.types.Operator):
             mat.use_nodes = True
 
         nt = mat.node_tree
-        bsdf, _output = _pbr_shader_nodes(nt)
+        bsdf, output = _pbr_shader_nodes(nt)
 
         found = {}
         for f in self.files:
@@ -4514,9 +4713,13 @@ def draw_modeling(layout, context):
     col.separator()
     col.label(text="Smooth preview")
     row = col.row(align=True)
+    # The keymap is only scanned when the key is going on the button: four
+    # thousand entries three times per redraw is a cost worth paying only
+    # for something that is actually shown.
+    show_keys = p is not None and p.keys_in_labels
     for label, mode in (("1", "CAGE"), ("2", "BOTH"), ("3", "SMOOTH")):
-        key = _shortcut("landfall.smooth_preview", {"mode": mode})
-        text = "%s  %s" % (label, key) if (key and p and p.keys_in_labels) else label
+        key = _shortcut("landfall.smooth_preview", {"mode": mode}) if show_keys else ""
+        text = "%s  %s" % (label, key) if key else label
         row.operator("landfall.smooth_preview", text=text).mode = mode
     col.prop(context.scene, "landfall_levels")
     col.operator("landfall.smooth_apply", text="Apply smooth", icon="CHECKMARK")
@@ -4593,10 +4796,18 @@ def draw_setup(layout, context):
 
     # How many of the five Maya settings are currently on. Shown so the button
     # never has to guess which way it should go, and neither does the user.
+    # The colors are read from the theme itself rather than from the stored
+    # snapshot: the snapshot lives on disk since 3.2x and the preference copy
+    # of it is empty after a reinstall, so the count said "off" while the
+    # viewport was plainly Maya's.
     parts = []
     if p is not None:
+        try:
+            colors_on = _theme_is_maya(context.preferences.themes[0].view_3d)
+        except Exception:
+            colors_on = bool(p.theme_backup)
         parts = [p.maya_navigation, p.marking_menu, p.wire_follows_mode,
-                 bool(p.theme_backup), scene.landfall_grid_finite]
+                 colors_on, scene.landfall_grid_finite]
     active = sum(1 for x in parts if x)
 
     box = layout.box()
@@ -4849,7 +5060,6 @@ CLASSES = (
     LANDFALL_OT_show_last_hidden,
     LANDFALL_OT_keymap_report,
     LANDFALL_OT_object_color,
-    LANDFALL_OT_grid_shade,
     LANDFALL_OT_save_defaults,
     LANDFALL_OT_maya_setup,
     LANDFALL_OT_reset_theme,
@@ -4893,6 +5103,13 @@ CLASSES = (
 )
 
 _keymaps = []
+
+# Where the general shortcuts go: the viewport keymap and every mode keymap
+# that would otherwise catch the key first.
+KEYMAP_TARGETS = (("3D View", "VIEW_3D"),) + tuple(
+    (name, "EMPTY") for name in (
+        "Object Mode", "Mesh", "Sculpt", "Vertex Paint", "Weight Paint",
+        "Image Paint", "Pose"))
 
 
 def _register_properties():
@@ -5041,39 +5258,72 @@ def _register_properties():
 
 
 
-def _register_handlers():
-    if _clear_border_cache not in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.append(_clear_border_cache)
-    if _clear_cage_cache not in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.append(_clear_cage_cache)
-    if _clear_cage_cache not in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.append(_clear_cage_cache)
-    if _wire_follow_mode not in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.append(_wire_follow_mode)
-    if _wire_reset not in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.append(_wire_reset)
-    if _grid_sync not in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.append(_grid_sync)
-    for lista in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
-        if _clear_all_caches not in lista:
-            lista.append(_clear_all_caches)
-    if _gizmos_load not in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.append(_gizmos_load)
-    if _keymap_heal_load not in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.append(_keymap_heal_load)
-    bpy.app.timers.register(_gizmos_sync, first_interval=0.2)
-    bpy.app.timers.register(_keymap_heal, first_interval=0.4)
+# The three overlays, drawn after the scene in every 3D viewport. Their
+# handles live here rather than in three globals with three pairs of
+# enable/disable functions that differed only by name.
+_DRAW = {"borders": _draw_borders, "cage": _draw_cage, "grid": _draw_grid}
+_draw_handles = {}
+
+
+def _draw_handlers(on):
+    for name, fn in _DRAW.items():
+        handle = _draw_handles.pop(name, None)
+        if handle is not None:
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(handle, "WINDOW")
+            except Exception:
+                pass
+        if on:
+            _draw_handles[name] = bpy.types.SpaceView3D.draw_handler_add(
+                fn, (), "WINDOW", "POST_VIEW")
+
+
+def _close_floating(*args):
+    """The modal operators behind the sheet and the marking menu die with
+    the file they were started in; their draw handlers did not, and a new
+    file opened with a sheet nobody could close."""
+    _sheet_stop()
+    _mm_stop()
+
+
+# Every handler in one table, so register and unregister cannot disagree
+# about what was added. A new file, an undo and a redo all rebuild the
+# datablocks, so the caches go as a whole in those three cases.
+HANDLERS = (
+    ("depsgraph_update_post", _on_depsgraph),
+    ("depsgraph_update_post", _wire_follow_mode),
+    ("load_post", _clear_all_caches),
+    ("load_post", _close_floating),
+    ("load_post", _wire_reset),
+    ("load_post", _grid_sync),
+    ("load_post", _gizmos_load),
+    ("load_post", _keymap_heal_load),
+    ("undo_post", _clear_all_caches),
+    ("redo_post", _clear_all_caches),
+)
+
+TIMERS = (_gizmos_sync, _keymap_heal)
+
+
+def _deferred_sync():
     # During register Blender hands out a restricted context in which the
     # window list is not reachable yet, so both of these would run on nothing.
     # A timer defers them to the first moment the real context exists.
-    def _deferred_sync():
-        _wire_reset()
-        _grid_sync()
-        return None
+    _wire_reset()
+    _grid_sync()
+    return None
 
-    bpy.app.timers.register(_deferred_sync, first_interval=0.1)
-    if _clear_border_cache not in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.append(_clear_border_cache)
+
+def _register_handlers():
+    for name, fn in HANDLERS:
+        lista = getattr(bpy.app.handlers, name)
+        if fn not in lista:
+            lista.append(fn)
+    _gizmos_attempts[0] = 0
+    _heal_attempts[0] = 0
+    _start_timer(_gizmos_sync, 0.2)
+    _start_timer(_keymap_heal, 0.4)
+    _start_timer(_deferred_sync, 0.1)
 
 
 def _register_keymaps(wm):
@@ -5091,18 +5341,7 @@ def _register_keymaps(wm):
             "snap": {"Pose"},                    # bendy bone resize
         }
 
-        targets = [("3D View", "VIEW_3D")]
-        targets += [(name, "EMPTY") for name in (
-            "Object Mode",
-            "Mesh",
-            "Sculpt",
-            "Vertex Paint",
-            "Weight Paint",
-            "Image Paint",
-            "Pose",
-        )]
-
-        for km_name, space in targets:
+        for km_name, space in KEYMAP_TARGETS:
             try:
                 km = kc.keymaps.new(name=km_name, space_type=space)
             except Exception:
@@ -5158,6 +5397,14 @@ def register():
     _register_handlers()
     _register_keymaps(bpy.context.window_manager)
 
+    # The three draw handlers stay registered for the whole life of the
+    # add-on; the scene flags decide whether they draw anything, and a flag
+    # that is off costs one comparison per redraw. Adding them only from the
+    # buttons' update callbacks meant that a file saved with an overlay on,
+    # or the add-on re-enabled over such a scene, showed the button lit and
+    # drew nothing until it was switched off and on again.
+    _draw_handlers(True)
+
     _define_macro()
 
     p = prefs(bpy.context)
@@ -5178,9 +5425,7 @@ def unregister():
     _marking_disable()
     _sheet_stop()
     _maya_nav_disable()
-    _disable_overlay()
-    _cage_disable()
-    _grid_disable()
+    _draw_handlers(False)
     _clear_border_cache()
     _clear_cage_cache()
     _border_recent.clear()
@@ -5188,26 +5433,17 @@ def unregister():
     _cage_batches.clear()
 
     # Every handler registered above has to come back off, or the draw calls
-    # and the mode watcher keep running after the add-on is disabled.
-    for handler, functions in (
-        (bpy.app.handlers.depsgraph_update_post,
-         (_clear_border_cache, _clear_cage_cache, _wire_follow_mode)),
-        (bpy.app.handlers.load_post,
-         (_clear_border_cache, _clear_cage_cache, _wire_reset, _grid_sync,
-          _gizmos_load, _keymap_heal_load)),
-        (bpy.app.handlers.undo_post, (_clear_all_caches,)),
-        (bpy.app.handlers.redo_post, (_clear_all_caches,)),
-    ):
-        for fn in functions:
-            if fn in handler:
-                handler.remove(fn)
+    # and the mode watcher keep running after the add-on is disabled. The
+    # timers too: a pending one would otherwise fire into a module that is
+    # no longer registered.
+    for name, fn in HANDLERS:
+        lista = getattr(bpy.app.handlers, name)
+        if fn in lista:
+            lista.remove(fn)
+    for fn in TIMERS + (_deferred_sync,):
+        _stop_timer(fn)
 
-    for km, kmi in _keymaps:
-        try:
-            km.keymap_items.remove(kmi)
-        except Exception:
-            pass
-    _keymaps.clear()
+    _remove_kmis(_keymaps)
 
     for cls in reversed(CLASSES + PROP_PANELS):
         bpy.utils.unregister_class(cls)
@@ -5236,6 +5472,3 @@ def unregister():
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
 
-
-if __name__ == "__main__":
-    register()

@@ -6,6 +6,185 @@ the change.
 
 ---
 
+## 3.41.0
+
+Less code, same behaviour, a stricter self check. Eighty-three lines fewer
+than 3.40.0 before the new checks, about fifty more for them.
+
+**Removed or folded.** `landfall.grid_shade`, an operator no button had
+called since the slider moved to a scene property. Three globals and six
+functions for the overlay draw handlers, which differed only by name, are
+one table and one function. Four keymap disable functions repeating the
+same removal loop share one helper. A parameter of `_wake_user_kmi` that
+nobody passed, a subdivision level set twice, and a `__main__` block that
+means nothing in an extension.
+
+**A keymap that did not exist.** Maya navigation was registered into
+"Grease Pencil Stroke Edit Mode", a name Blender 5.2 no longer has;
+`keymaps.new()` created it silently and the entries never fired. The
+keymap is "Grease Pencil Edit Mode" and the navigation now works there.
+
+**The self check looks at the keymaps too.** Every keymap name we write
+into must exist in Blender's own configuration, or it is reported. And
+every shortcut of ours that sits on top of one of Blender's in the same
+keymap is listed as a NOTE, except the replacements made on purpose — E,
+Ctrl+O, Ctrl+Shift+S and Alt plus a mouse button. On a stock 5.2 that
+leaves exactly one: the snap pie on Shift+Alt+S hides *To Sphere* in Edit
+Mode. Whether to move one of them is a decision, not a bug, so the check
+only says it.
+
+Verified: the panels of the sidebar and the Scene tab drawn in six modes
+with stderr captured and empty; every dynamic tooltip answered for every
+value; 194 operator calls across five modes without an exception; the
+extrusion reference values; nothing left behind on disable.
+
+---
+
+## 3.40.0
+
+Reactivity of the border edge overlay, and a stability pass over the rest.
+Measured on macOS with Blender 5.2.1 on meshes of 840, 20,200 and 289,560
+edges.
+
+**The refresh in Edit Mode follows the mesh and the mouse.** The border
+used to refresh on a fixed clock of a quarter of a second, whether or not
+anything had changed — and our own sync of the edit cage produced a
+depsgraph update that invalidated the result just computed, so the cycle
+fed itself at every redraw. Now the depsgraph says when the mesh actually
+changed, our own update is recognised and ignored, and the interval is
+derived from the measured cost of the refresh: 30 ms on a mesh that reads
+in a fraction of a millisecond, 80 ms on 290,000 edges, never more than a
+quarter of a second. Sitting still in Edit Mode costs 0.01 ms per frame.
+A refresh deferred by the interval schedules its own redraw, so the border
+catches up even when the mouse stops before it was due.
+
+**One scan and one set of GPU batches per viewport.** `visible_get()`
+answers for the viewport in the context, so a viewport in Local View sees
+a different set of objects than its neighbour; a single shared scan
+flipped between the two on every frame and rebuilt both batches each time.
+Checked with two viewports and with Quad View, whose four regions share
+one space and therefore one store.
+
+**Overlays saved on come back on.** The draw handlers were added only by
+the buttons' update callbacks. A file saved with border edges or the cage
+on — or the add-on re-enabled over such a scene — showed the button lit
+and drew nothing until it was switched off and on again. The three
+handlers now live as long as the add-on; the scene flags decide what is
+drawn, and a flag that is off costs one comparison per redraw.
+
+**A new file closes what the old one left floating.** The shortcut sheet
+and the marking menu are modal operators, which die with the file they
+were started in; their draw handlers did not, and a new file could open
+with a sheet nobody could close. Both are closed on load.
+
+Verified in this pass, and unchanged: undo and redo with the overlays on,
+deleting objects while they draw, topology changes, mirror and other
+modifiers that open or close borders, linked duplicates, Local View;
+disabling the add-on leaves no handler, no timer, no keymap entry and no
+draw handler behind, and puts Blender's own E and Alt+click back.
+
+---
+
+## 3.39.0
+
+Measured on a scene of 1,203 mesh objects, 401 of them subdivided, plus a
+290,000-edge mesh for Edit Mode. Every figure below is from that scene, on
+macOS with Blender 5.2.1, before and after.
+
+**The overlays no longer walk the scene on every redraw.** Border edges and
+cage each visited every object of the view layer on every frame of every
+viewport — visibility, selection, the modifier stack — and concatenated
+twelve hundred arrays, only to find that the GPU batch from the previous
+frame was still good. 3.8 ms and 3.2 ms per frame with nothing moving. The
+walk is now done once and kept until the depsgraph reports something that
+can change its result: a visibility or selection change, a modifier added
+or removed. Dragging an object is a transform update and triggers no walk.
+A time limit of half a second is the safety net. A frame at rest now costs
+0.12 ms and 0.04 ms; during a drag, the same.
+
+**Edit Mode reads at attribute speed.** A mesh in Edit Mode exposes no
+attribute layers at all — `mesh.attributes` is empty — so every read fell
+back on the collection wrappers, which are the slow path the code had been
+avoiding everywhere else: 50 ms on 290,000 edges, against 1.3 ms for the
+same mesh in Object Mode. `to_mesh()` after the sync hands back the same
+data with the attributes present; the whole read is now 4.4 ms, and it was
+checked to follow a vertex being moved. The size check moved before the
+sync, so a mesh above the limit is no longer synced four times a second for
+nothing.
+
+**The fresh-object budget is a time, not a count.** Four hundred fresh
+objects in one frame took 236 ms; the budget is now six milliseconds of
+computation per redraw, and the remaining objects arrive over the next
+frames. The worst frame on that scene went from 236 ms to 7 ms.
+
+---
+
+## 3.38.0
+
+A review pass over the whole file, with each fault confirmed either by a
+static check or in a running Blender before it was touched.
+
+**Loop select on double click was silently off.** After a keymap rebuild the
+mutings are re-applied, and that step silenced every `mesh.loop_select` and
+`mesh.edgering_select` entry in the Mesh keymap by name — including our own
+double-click ones, which Blender mirrors into the same keymap. The user
+keymap is saved with the preferences, so once muted they stayed muted across
+sessions. Seen on a real macOS install: both entries inactive, double click
+doing nothing. The muting now touches only Blender's Alt+click entries, and
+the double-click ones are woken up whenever navigation is enabled.
+
+**The shortcut sheet did not draw.** Two nested functions read a variable
+named `size` that did not exist, so the draw handler raised on every redraw
+and the card never appeared. A static check found it at once; no script in
+the battery reaches the drawing, which is exactly where it had been hiding.
+
+**Load PBR set failed with a height map.** The material output node was
+fetched under one name and used under another, so wiring the Displacement
+node raised a `NameError`. Sets without a height map were unaffected.
+
+**Finite grid with an odd number of cells drew no axes.** The axis lines were
+the grid lines that happened to pass through the origin, and with an odd
+count none does. Blender's own axes are switched off by the finite grid, so
+the viewport had none at all. The two axes are now drawn on their own.
+
+**GPU batches are rebuilt only when geometry or a transform changed.** Every
+depsgraph update — a click on an object counted for four — bumped the overlay
+generation and threw away both overlays' batches. The two handlers are now
+one, and it drops the batches only when an object it had cached was actually
+invalidated.
+
+**The Modeling panel scanned the keymap on every redraw.** Three full passes
+over four thousand entries to build labels that are only shown when *Show
+shortcuts on the buttons* is on. The scan now happens only in that case. The
+shortcut sheet keeps its rows for two seconds instead of reading sixteen
+bindings per redraw, which cost 6 ms a frame.
+
+**Timers are registered once and removed on disable.** Opening several files
+in a row stacked a copy of the gizmo and keymap timers per file; disabling the
+add-on left pending ones to fire into an unregistered module. The keymap
+repair also ran with no preferences to read, which is the disabled case.
+
+**Update callbacks no longer depend on `context.window`.** Setting a
+Landfall scene property from a timer, the console or a script raised before
+the redraw. Redraws now go through the window manager.
+
+Also: the marking menu's open-branch chip was built and painted twice; a
+block of its constants was defined twice; a list of muted entries was filled
+and never read; the native extrude muting was written out in two places that
+had already started to differ. All folded into one.
+
+---
+
+## 3.37.1
+
+**The transform gizmos are applied over several rounds, not once.** A single
+pass 0.2 s after registering was enough on Windows and not on macOS, where nine
+viewports out of ten still had them off with the preference on: whatever builds
+the workspaces had not finished. Same fix, and same reason, as the keymap repair
+in 3.29.0 — a wait chosen by intuition is a wait that is wrong on some machine.
+
+---
+
 ## 3.37.0
 
 **The overlay switch is an enum.** `landfall.toggle_scene_flag` took a free
