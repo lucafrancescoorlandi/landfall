@@ -23,6 +23,20 @@ replaced can be switched off from the preferences.
 
 ---
 
+## Guides
+
+Step-by-step PDFs, in Italian and English.
+
+| | Italiano | English |
+|---|---|---|
+| **Installation** | [Landfall-installazione.pdf](docs/Landfall-installazione.pdf) | [Landfall-installation.pdf](docs/Landfall-installation.pdf) |
+| **Commands** | [Landfall-comandi.pdf](docs/Landfall-comandi.pdf) | [Landfall-commands.pdf](docs/Landfall-commands.pdf) |
+
+The command guide covers every command with a real screenshot, its key
+combination and one line of explanation.
+
+---
+
 ## Installation
 
 1. Download `landfall-x.x.x.zip`.
