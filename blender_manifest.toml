@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "landfall"
-version = "3.41.0"
+version = "3.41.2"
 name = "Landfall"
 tagline = "Maya-style shelf, hotbox and project tools"
 maintainer = "Luca Orlandi"

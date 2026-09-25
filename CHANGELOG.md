@@ -6,6 +6,31 @@ the change.
 
 ---
 
+## 3.41.2
+
+**E extruded at distance zero.** The move chained to the extrusion was
+defined with `release_confirm`, so it confirmed the moment E was released:
+a normal tap of the key produced the new faces exactly on top of the old
+ones, and the mouse never got to set the distance. It only worked if E was
+held down while dragging. Found while capturing the command guide, by
+comparing the same gesture with G, which moved as expected. The option is
+gone: press E, move the mouse, click or press Enter — the same as
+Blender's own E. The adjust panel and its six parameters are unchanged.
+
+---
+
+## 3.41.1
+
+**The snap pie moves to Shift+Alt+X.** On Shift+Alt+S it covered *To Sphere*
+in Edit Mode — the shortcut tutorials use to turn a square of vertices into
+a circle before cutting a round hole — and Landfall's rule is to add on top
+of Blender rather than take its keys away. The self check of 3.41.0 is what
+found it. X is Maya's snap-to-grid key, and Shift+Alt+X is free in every
+keymap the pie is registered in, checked against Blender 5.2's own
+configuration. On a stock 5.2 the self check now reports no NOTE at all.
+
+---
+
 ## 3.41.0
 
 Less code, same behaviour, a stricter self check. Eighty-three lines fewer

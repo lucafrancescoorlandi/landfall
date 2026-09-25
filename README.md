@@ -1,4 +1,6 @@
-# Landfall 3.41.0
+# Landfall 3.41.2
+
+<img src="https://raw.githubusercontent.com/lucafrancescoorlandi/landfall/main/docs/landfall-icon.png" width="96" align="right" alt="">
 
 A Blender add-on for artists coming from Maya.
 
@@ -23,7 +25,7 @@ replaced can be switched off from the preferences.
 
 ## Installation
 
-1. Download `landfall.zip`.
+1. Download `landfall-x.x.x.zip`.
 2. In Blender: `Edit → Preferences → Add-ons`.
 3. Click the arrow at the top right of the panel → `Install from Disk…`.
 4. Pick the zip file.
@@ -147,7 +149,7 @@ add-on preferences.
 | `Backspace` | Deletes, if turned on in the preferences |
 | `Ctrl+Tab` | Marking menu |
 | `Shift+Alt+Q` | Modeling pie, in Edit Mode |
-| `Shift+Alt+S` | Snap pie |
+| `Shift+Alt+X` | Snap pie |
 | `Alt+1` | Smooth preview: cage only |
 | `Alt+2` | Smooth preview: smooth surface with cage on top |
 | `Alt+3` | Smooth preview: smooth surface only |

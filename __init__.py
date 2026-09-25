@@ -29,7 +29,7 @@ from gpu_extras.batch import batch_for_shader
 bl_info = {
     "name": "Landfall",
     "author": "Luca Orlandi",
-    "version": (3, 41, 0),
+    "version": (3, 41, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Landfall | Properties > Object | Shift+Q | Alt+Q",
     "description": "Maya-style shelf for Blender",
@@ -2600,7 +2600,10 @@ def _define_macro():
         passo = LANDFALL_OT_extrude_move.define("TRANSFORM_OT_translate")
         passo.properties.orient_type = "NORMAL"
         passo.properties.constraint_axis = (False, False, True)
-        passo.properties.release_confirm = True
+        # No release_confirm. With it the move confirmed as soon as E was
+        # released, so a normal tap of E extruded at distance zero and the
+        # mouse never got to set it. Blender's own E does not set it either:
+        # press E, move, click or Enter.
     except Exception as err:
         print("[landfall] could not build the extrude macro: %s" % err)
 
@@ -5359,8 +5362,13 @@ def _register_keymaps(wm):
                                           "PRESS", alt=True)
                 _keymaps.append((km, kmi))
 
+            # Shift+Alt+X, not S: in Edit Mode Blender has To Sphere on
+            # Shift+Alt+S, the shortcut every tutorial uses to round a hole,
+            # and the pie hid it. X is Maya's snap-to-grid key, and the
+            # combination is free in every keymap listed here — checked
+            # against Blender 5.2's own configuration.
             if km_name not in skip["snap"]:
-                kmi = km.keymap_items.new("wm.call_menu_pie", "S", "PRESS",
+                kmi = km.keymap_items.new("wm.call_menu_pie", "X", "PRESS",
                                           shift=True, alt=True)
                 kmi.properties.name = "VIEW3D_MT_landfall_snap_pie"
                 _keymaps.append((km, kmi))
