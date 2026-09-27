@@ -969,6 +969,7 @@ SHEET_NAV = (
     ("Pan", "view3d.move", None, {"alt": True}),
     ("Zoom", "view3d.zoom", None, {"alt": True}),
     ("Frame selection", "view3d.view_selected", None, {"type": "F"}),
+    ("Make face", "mesh.edge_face_add", None, {"shift": True}),
     ("Loop select", "mesh.loop_select", None, {"value": "DOUBLE_CLICK"}),
 )
 
@@ -999,7 +1000,6 @@ SHEET_BLENDER = (
     ("Global x-ray", "Alt Z"),
     ("Loop cut", "Ctrl R"),
     ("Knife", "K"),
-    ("Make face", "F"),
     ("Subdivision level", "Ctrl 1-5"),
     ("Orientation pie", ","),
     ("Pivot point pie", "."),
@@ -2023,6 +2023,7 @@ MM_LISTS = {
         ("Spin edge", "mesh.edge_rotate", {}),
         ("Detach", "landfall.detach_separate", {}),
         ("Grid fill", "mesh.fill_grid", {}),
+    ("Make face", "mesh.edge_face_add", {}),
     ),
     "snap": (
         ("Vertex", "landfall.set_snap", {"target": "VERTEX"}),
@@ -2568,7 +2569,9 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
     # con le divisioni e il taper della prima. Maya azzera ogni volta, e cosi'
     # facciamo noi.
     thickness: bpy.props.FloatProperty(
-        name="Thickness", description="Distance along the face normal",
+        name="Thickness", description="Distance along the face normal. After "
+        "E, 0 keeps the distance set with the mouse and any other value "
+        "replaces it",
         default=0.0, unit="LENGTH", options={"SKIP_SAVE"})
     offset: bpy.props.FloatProperty(
         name="Offset", description="Inset the face before extruding, as Maya's "
@@ -2613,8 +2616,15 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
             # The spread step reads these from the mesh: a macro does not
             # hand one step's values to the next, and the redo panel re-runs
             # both steps from the state before the first.
+            # The fourth value is the thickness, and only after E: there
+            # the move that follows adds to it, so in the adjust panel a
+            # thickness typed in used to land on top of the dragged
+            # distance. The spread step makes a typed thickness replace
+            # the drag instead, as Maya's does.
             obj.data[SPREAD_PROP] = [float(max(1, self.divisions)),
-                                     float(self.twist), float(self.taper)]
+                                     float(self.twist), float(self.taper),
+                                     0.0 if self.then_spread
+                                     else float(self.thickness)]
         if not done:
             self.report({"WARNING"}, "Nothing selected to extrude")
             return {"CANCELLED"}
@@ -2712,7 +2722,7 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
 
         salto = self.thickness / passi
         correnti = list(facce)
-        l_gruppo, l_catena, l_passo, l_base, l_normale = layers
+        l_gruppo, l_catena, l_passo, l_base, l_normale, l_dopo = layers
 
         # The base ring: every vertex of the faces about to grow gets a
         # chain number, and every vertex grown from it later carries that
@@ -2813,6 +2823,8 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
                     delta = direzioni.get(chiave)
                     if delta is not None:
                         v.co += delta
+                # Where the thickness alone puts it, before any move.
+                v[l_dopo] = v.co
             if salto:
                 # The next step reads the normals of these faces, and they
                 # are stale after the move.
@@ -2824,7 +2836,7 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
 
 
 SPREAD_LAYERS = ("lf_group", "lf_chain", "lf_step")
-SPREAD_VECTORS = ("lf_base", "lf_normal")
+SPREAD_VECTORS = ("lf_base", "lf_normal", "lf_after")
 SPREAD_PROP = "landfall_spread"
 
 
@@ -2835,9 +2847,11 @@ def _spread_objects(context, op):
             continue
         values = obj.data.get(SPREAD_PROP)
         bm = bmesh.from_edit_mesh(obj.data)
-        if values is not None and len(values) == 3:
+        if values is not None and len(values) in (3, 4):
             try:
-                _spread_mesh(bm, int(values[0]), float(values[1]), float(values[2]))
+                spessore = float(values[3]) if len(values) == 4 else 0.0
+                _spread_mesh(bm, int(values[0]), float(values[1]),
+                             float(values[2]), spessore)
             except Exception as err:
                 op.report({"WARNING"}, "Spread failed: %s" % err)
         _spread_layers_drop(bm)
@@ -2891,15 +2905,23 @@ class LANDFALL_OT_extrude_spread(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def _spread_mesh(bm, passi, twist, taper):
+def _spread_mesh(bm, passi, twist, taper, thickness=0.0):
     l_gruppo = bm.verts.layers.int.get(SPREAD_LAYERS[0])
     l_catena = bm.verts.layers.int.get(SPREAD_LAYERS[1])
     l_passo = bm.verts.layers.int.get(SPREAD_LAYERS[2])
     l_base = bm.verts.layers.float_vector.get(SPREAD_VECTORS[0])
     l_normale = bm.verts.layers.float_vector.get(SPREAD_VECTORS[1])
-    if None in (l_gruppo, l_catena, l_passo, l_base, l_normale):
+    l_dopo = bm.verts.layers.float_vector.get(SPREAD_VECTORS[2])
+    if None in (l_gruppo, l_catena, l_passo, l_base, l_normale, l_dopo):
         return
     passi = max(1, passi)
+    if abs(thickness) > 1e-9:
+        # A thickness typed into the panel after E is the whole distance:
+        # the far end goes back to where the extrusion alone put it, and
+        # the drag that followed is dropped rather than added.
+        for v in bm.verts:
+            if v[l_gruppo] > 0 and v[l_passo] == passi:
+                v.co = v[l_dopo]
     # Chains: for each group and base vertex, the ring vertices by step.
     gruppi = {}
     for v in bm.verts:
@@ -3046,6 +3068,24 @@ def _user_keymap(name):
         return bpy.context.window_manager.keyconfigs.user.keymaps.get(name)
     except Exception:
         return None
+
+
+# Blender's own plain F in the edit keymaps that Maya's F replaces.
+NATIVE_F = (("Mesh", "mesh.edge_face_add"), ("Curve", "curve.make_segment"),
+            ("Armature", "armature.fill"))
+
+
+def _set_native_frame_keys(active):
+    """Blender's F in the edit keymaps, muted while Maya navigation puts
+    frame-selection there, back on when it is switched off."""
+    for km_name, idname in NATIVE_F:
+        km = _user_keymap(km_name)
+        if km is None:
+            continue
+        for k in km.keymap_items:
+            if (k.idname == idname and k.type == "F"
+                    and not (k.ctrl or k.alt or k.shift or k.oskey)):
+                k.active = active
 
 
 def _set_native_extrude(active):
@@ -3310,6 +3350,21 @@ MAYA_NAV_EXTRA = (
     ("Mesh", "EMPTY", "mesh.edgering_select", "LEFTMOUSE", {"ctrl": True},
      "DOUBLE_CLICK"),
     ("Object Mode", "EMPTY", "view3d.view_selected", "F", {}, "PRESS"),
+    # Edit Mode too: Maya's F frames the selected components as well, and
+    # a modeller reaches for it a hundred times a day. Blender's own F there
+    # (Make Edge/Face, and the curve and armature equivalents) is muted
+    # while the navigation is on and moves to Shift+F, which is free in
+    # every one of these keymaps — checked against Blender 5.2's own
+    # configuration. Ctrl+F stays Blender's Face menu, which does not hold
+    # Make Edge/Face anyway: that one lives in the Vertex menu, Ctrl+V.
+    ("Mesh", "EMPTY", "view3d.view_selected", "F", {}, "PRESS"),
+    ("Curve", "EMPTY", "view3d.view_selected", "F", {}, "PRESS"),
+    ("Armature", "EMPTY", "view3d.view_selected", "F", {}, "PRESS"),
+    ("Lattice", "EMPTY", "view3d.view_selected", "F", {}, "PRESS"),
+    ("Metaball", "EMPTY", "view3d.view_selected", "F", {}, "PRESS"),
+    ("Mesh", "EMPTY", "mesh.edge_face_add", "F", {"shift": True}, "PRESS"),
+    ("Curve", "EMPTY", "curve.make_segment", "F", {"shift": True}, "PRESS"),
+    ("Armature", "EMPTY", "armature.fill", "F", {"shift": True}, "PRESS"),
 )
 
 # Entries in the user keymap that would fire at the same time as the new ones.
@@ -3335,13 +3390,38 @@ NAV_INPUT_PREFS = {
 
 def _apply_navigation_prefs(context, maya=True):
     """The viewport options that make Blender feel like Maya, or Blender's
-    own factory values when maya is False."""
+    own factory values when maya is False.
+
+    Only a value that differs is written. Assigning an input preference
+    runs its update even when nothing changes, and for Emulate 3 Button
+    Mouse that update reloads Blender's whole key configuration: every
+    stock entry gets a new identity, and a user keymap we touch in the
+    same breath is then compared against entries it no longer matches.
+    Blender's answer to that is to drop every stock shortcut from the
+    keymap, which is where the truncated Mesh, Curve and Armature keymaps
+    came from, on enable, on disable and in the middle of a session.
+    Should a reload happen anyway, the configuration is brought up to
+    date here, before any keymap is touched.
+    """
     inputs = context.preferences.inputs
     for name, (maya_value, stock_value) in NAV_INPUT_PREFS.items():
+        value = maya_value if maya else stock_value
         try:
-            setattr(inputs, name, maya_value if maya else stock_value)
+            if getattr(inputs, name) != value:
+                setattr(inputs, name, value)
         except Exception:
             pass
+    _keyconfig_settle(context)
+
+
+def _keyconfig_settle(context):
+    """Flush a pending rebuild of the user key configuration, so that the
+    stock entries and their user copies agree before we mute or wake any
+    of them."""
+    try:
+        context.window_manager.keyconfigs.update()
+    except Exception:
+        pass
 
 
 def _restore_navigation_prefs(context):
@@ -3448,8 +3528,13 @@ def _reapply_mutes():
     try:
         if p.maya_navigation:
             _set_native_loop_select(False)
+            _set_native_frame_keys(False)
             _wake_user_kmi("mesh.loop_select", value="DOUBLE_CLICK")
             _wake_user_kmi("mesh.edgering_select", value="DOUBLE_CLICK")
+            for km_name in ("Object Mode", "Mesh", "Curve", "Armature",
+                            "Lattice", "Metaball"):
+                _wake_user_kmi("view3d.view_selected", keymap=km_name, key="F")
+            _wake_make_face()
         if p.maya_extrude:
             _set_native_extrude(False)
             _wake_user_kmi("landfall.extrude")
@@ -3482,6 +3567,9 @@ def _kmi_signature(kmi):
 # modifiers with symbols on macOS and with words on Windows.
 SHADOWS_INTENDED = {
     ("Mesh", "E", False, False, False),
+    ("Mesh", "F", False, False, False),
+    ("Curve", "F", False, False, False),
+    ("Armature", "F", False, False, False),
     ("Window", "O", True, False, False),
     ("Window", "S", True, False, True),
 } | {
@@ -3737,6 +3825,9 @@ def _maya_nav_enable(context):
     if kc is None:
         return
 
+    # Preferences first: one of them can reload the key configuration,
+    # and that must be over before any user keymap is muted or woken.
+    _apply_navigation_prefs(context)
     _set_native_loop_select(False)
 
     for km_name, space in NAV_MODE_KEYMAPS:
@@ -3756,20 +3847,50 @@ def _maya_nav_enable(context):
         kmi = km.keymap_items.new(idname, key, value, **mods)
         _nav_keymaps.append((km, kmi))
 
+    # The user copies of the entries just added exist only once Blender
+    # has rebuilt the user configuration, so that is done now rather than
+    # left to the next event.
+    _keyconfig_settle(context)
+
     # The mirrored user copies are what Blender actually runs, and a copy
     # muted by an earlier version stays muted in the saved preferences.
     _wake_user_kmi("mesh.loop_select", value="DOUBLE_CLICK")
     _wake_user_kmi("mesh.edgering_select", value="DOUBLE_CLICK")
-    _wake_user_kmi("view3d.view_selected", keymap="Object Mode", key="F")
-    _apply_navigation_prefs(context)
+    _set_native_frame_keys(False)
+    for km_name in ("Object Mode", "Mesh", "Curve", "Armature", "Lattice",
+                    "Metaball"):
+        _wake_user_kmi("view3d.view_selected", keymap=km_name, key="F")
+    _wake_make_face()
+
+
+def _wake_make_face():
+    """Our Shift+F copies of Make Edge/Face and its cousins. Filtered on the
+    modifier: the plain F entries with the same idnames are Blender's, and
+    those are meant to stay muted."""
+    try:
+        user = bpy.context.window_manager.keyconfigs.user
+    except Exception:
+        return
+    if user is None:
+        return
+    for km_name, idname in NATIVE_F:
+        km = user.keymaps.get(km_name)
+        if km is None:
+            continue
+        for k in km.keymap_items:
+            if (k.idname == idname and k.type == "F" and k.shift
+                    and not (k.ctrl or k.alt or k.oskey) and not k.active):
+                k.active = True
 
 
 def _maya_nav_disable(restore_inputs=True):
+    # Preferences first, for the reason given in _maya_nav_enable.
+    if restore_inputs:
+        _restore_navigation_prefs(bpy.context)
     _remove_kmis(_nav_keymaps)
     # Same reason as the marking menu: restore by scanning, not from memory.
     _set_native_loop_select(True)
-    if restore_inputs:
-        _restore_navigation_prefs(bpy.context)
+    _set_native_frame_keys(True)
 
 
 def _maya_nav_update(self, context):
@@ -6221,6 +6342,11 @@ def register():
 
     p = prefs(bpy.context)
     if p is not None:
+        # Before any keymap is muted: see _apply_navigation_prefs.
+        if p.maya_navigation:
+            _apply_navigation_prefs(bpy.context)
+        else:
+            _keyconfig_settle(bpy.context)
         if p.maya_extrude:
             _extrude_enable(bpy.context)
         if p.maya_navigation:

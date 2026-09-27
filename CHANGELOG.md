@@ -74,6 +74,38 @@ hides everything but the selection there, and again to return.
 modifier there; the button now steps out to Object Mode for the time it
 takes and comes back, selection intact.
 
+**F frames the selection in Edit Mode too.** It only did so in Object
+Mode; in Edit Mode it was still Blender's Make Edge/Face, so the key a
+modeller presses a hundred times a day did something else half the time.
+Maya navigation now puts frame-selection on F in the mesh, curve, armature,
+lattice and metaball edit keymaps and moves Blender's F there to Shift+F:
+Make Edge/Face for meshes, Make Segment for curves, Fill for armatures.
+Make Edge/Face is also in Blender's Vertex menu (Ctrl+V) and is added to
+the Modeling branch of the marking menu as Make face. Ctrl+F stays
+Blender's Face menu, which does not hold Make Edge/Face anyway.
+
+**A thickness typed in after E landed on top of the drag.** The E panel
+showed Thickness next to the move the mouse had made, and the two added
+up: drag 0.5, type 1, get 1.5. Thickness 0 now keeps the dragged distance
+and any other value replaces it, so the number typed is the whole
+extrusion, as Maya's is. Measured: drag 0.5 then Thickness 1 gives 1;
+with Divisions 4 the rings sit at 1.5, 2, 2.5 and 3.
+
+**The cause of the truncated keymaps, found.** Writing the Emulate 3
+Button Mouse preference — even to the value it already had — makes
+Blender reload its whole key configuration, and every stock entry comes
+back with a new identity. A user keymap Landfall touched in the same
+breath (muting Blender's F or E, say) was then compared against entries
+it no longer matched, and Blender's answer is to drop every stock
+shortcut from it. That is where the Mesh keymap with 18 entries out of
+129 came from, at enable, at disable and in the middle of a session; the
+repair rounds and the mode watcher only treated the symptom. Landfall now
+writes an input preference only when it differs, and brings the key
+configuration up to date before it mutes or wakes anything. Verified:
+disabling the add-on leaves Mesh, Curve and Armature at exactly Blender's
+129, 56 and 66 entries, where before they held 18, 6 and 5; enabling it
+again reloads nothing.
+
 **Landfall off is Blender.** Disabling or uninstalling the add-on now puts
 back everything it changed outside its own shortcuts: the theme, the floor
 grid and axis lines, the four navigation preferences (Orbit Around

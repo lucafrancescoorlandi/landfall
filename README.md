@@ -1,7 +1,5 @@
 # Landfall 3.41.3
 
-<img src="https://raw.githubusercontent.com/lucafrancescoorlandi/landfall/main/docs/landfall-icon.png" width="96" align="right" alt="">
-
 A Blender add-on for artists coming from Maya.
 
 Landfall brings a familiar set of commands into Blender: a shelf-style panel,
@@ -23,23 +21,9 @@ replaced can be switched off from the preferences.
 
 ---
 
-## Guides
-
-Step-by-step PDFs, in Italian and English.
-
-| | Italiano | English |
-|---|---|---|
-| **Installation** | [Landfall-installazione.pdf](docs/Landfall-installazione.pdf) | [Landfall-installation.pdf](docs/Landfall-installation.pdf) |
-| **Commands** | [Landfall-comandi.pdf](docs/Landfall-comandi.pdf) | [Landfall-commands.pdf](docs/Landfall-commands.pdf) |
-
-The command guide covers every command with a real screenshot, its key
-combination and one line of explanation.
-
----
-
 ## Installation
 
-1. Download `landfall-x.x.x.zip`.
+1. Download `landfall.zip`.
 2. In Blender: `Edit → Preferences → Add-ons`.
 3. Click the arrow at the top right of the panel → `Install from Disk…`.
 4. Pick the zip file.
@@ -177,7 +161,7 @@ With **Maya navigation** on, these are added as well:
 | Key | Action |
 |---|---|
 | `Alt` + Left / Middle / Right Mouse | Orbit, pan, zoom |
-| `F` | Frame the selection, Object Mode only |
+| `F` | Frame the selection, in Object Mode and in the edit modes |
 | Double click | Loop select |
 | `Ctrl` + double click | Edge ring select |
 
@@ -553,10 +537,14 @@ confuse and do different things.
 With **Maya extrude on E** (on by default) the key does what it does in
 Maya. With faces selected: press `E`, move the mouse to set the distance,
 click or press Enter. The panel then shows the six parameters above plus
-the move, and stays editable until the next operation. Divisions, twist and
-taper are spread over the distance the mouse set, so three divisions are
-three even segments whether the distance came from the mouse or from
-Thickness. With edges or vertices selected, and nothing else, `E` hands over
+the move, and stays editable until the next operation; it appears once the
+move is confirmed, as every adjust panel in Blender does. A number typed
+right after `E` sets the distance, as with Blender's own extrude: `E`, `1`,
+Enter. In the panel, Thickness 0 keeps the distance the mouse set and any
+other value replaces it, so a thickness typed there is the whole extrusion,
+as in Maya, not something added on top of the drag. Divisions, twist and
+taper are spread over the final distance, so three divisions are three even
+segments whether the distance came from the mouse or from Thickness. With edges or vertices selected, and nothing else, `E` hands over
 to Blender's own extrude, which knows how to move those: a lone edge along
 its normal, the rest free. With several objects in Edit Mode, every one of
 them is extruded. Turning the preference off gives `E` back to Blender
@@ -744,9 +732,16 @@ in `Preferences → Add-ons → Landfall`.
 | `Alt` + Left Mouse | Orbit |
 | `Alt` + Middle Mouse | Pan |
 | `Alt` + Right Mouse | Zoom |
-| `F` | Frame the selection, Object Mode only |
+| `F` | Frame the selection, in Object Mode and in the edit modes |
+| `Shift` + `F` | Make Edge/Face (mesh), Make Segment (curve), Fill (armature) |
 | Double click | Loop select, moved from `Alt` + click |
 | `Ctrl` + double click | Edge ring select |
+
+`F` frames the selected components in Edit Mode too, as it does in Maya;
+Blender's own F there, *Make Edge/Face*, moves to `Shift+F` while the
+navigation is on. It is also in Blender's Vertex menu (`Ctrl+V`) and in the
+Modeling branch of the marking menu as *Make face*; `Alt+F` is Fill, a
+different operation. `Ctrl+F` stays Blender's Face menu.
 
 `Home` frames the whole scene, which is what `A` does in Maya. On a laptop or a
 keyboard without a numeric block, `Home` is `Fn` + Left Arrow.
