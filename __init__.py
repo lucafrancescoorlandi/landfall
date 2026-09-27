@@ -19,6 +19,7 @@ import os
 import time
 
 import bpy
+from bpy.app.handlers import persistent
 import blf
 import bmesh
 import mathutils
@@ -29,9 +30,9 @@ from gpu_extras.batch import batch_for_shader
 bl_info = {
     "name": "Landfall",
     "author": "Luca Orlandi",
-    "version": (3, 41, 2),
+    "version": (3, 41, 3),
     "blender": (4, 2, 0),
-    "location": "View3D > Sidebar (N) > Landfall | Properties > Object | Shift+Q | Alt+Q",
+    "location": "View3D > Sidebar (N) > Landfall | Properties > Scene | Shift+Q | Alt+Q",
     "description": "Maya-style shelf for Blender",
     "category": "3D View",
 }
@@ -60,14 +61,23 @@ def draw_gizmos(layout, context):
     box = layout.column(align=True)
 
     row = box.row(align=True)
+    p = prefs(context)
     if spaces:
         space = spaces[0]
         row.prop(space, "show_gizmo", text="Gizmos", toggle=True, icon="GIZMO")
         sub = row.row(align=True)
         sub.enabled = space.show_gizmo
-        sub.prop(space, "show_gizmo_object_translate", text="Move", toggle=True)
-        sub.prop(space, "show_gizmo_object_rotate", text="Rotate", toggle=True)
-        sub.prop(space, "show_gizmo_object_scale", text="Scale", toggle=True)
+        if p is not None and p.maya_gizmos:
+            # With the preference on, the choice is one for every
+            # workspace, so the buttons edit that choice and not the
+            # viewport under the mouse.
+            sub.prop(p, "gizmo_flags", index=0, text="Move", toggle=True)
+            sub.prop(p, "gizmo_flags", index=1, text="Rotate", toggle=True)
+            sub.prop(p, "gizmo_flags", index=2, text="Scale", toggle=True)
+        else:
+            sub.prop(space, "show_gizmo_object_translate", text="Move", toggle=True)
+            sub.prop(space, "show_gizmo_object_rotate", text="Rotate", toggle=True)
+            sub.prop(space, "show_gizmo_object_scale", text="Scale", toggle=True)
     else:
         row.operator("landfall.toggle_gizmos", text="Gizmos", icon="GIZMO")
 
@@ -162,6 +172,15 @@ def _view3d_spaces(context):
 
 
 def _view3d_area(context):
+    """The 3D viewport to act on: the one the command was issued in when
+    there is one, else the first on the screen. Isolate and the shortcut
+    sheet used to take the first one always, so with two viewports they
+    acted on the wrong one."""
+    area = getattr(context, "area", None)
+    if area is not None and area.type == "VIEW_3D":
+        for region in area.regions:
+            if region.type == "WINDOW":
+                return area, region
     win = getattr(context, "window", None)
     if win is None or win.screen is None:
         return None, None
@@ -246,6 +265,26 @@ def _with_shortcut(text, idname, props=None):
     return text + "\nShortcut: " + key if key else text
 
 
+def _own(objs):
+    """Objects whose properties can be written: not linked from another
+    file. Writing color, wire or a modifier level on a linked object raises,
+    and the operator died halfway through the selection."""
+    return [o for o in objs if getattr(o, "library", None) is None]
+
+
+def _edit_mesh_hidden(context):
+    """Whether any face is hidden in the meshes being edited."""
+    for o in context.objects_in_mode_unique_data:
+        if o.type != "MESH":
+            continue
+        try:
+            if any(f.hide for f in bmesh.from_edit_mesh(o.data).faces):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 # --------------------------------------------------------------- operators
 
 
@@ -261,6 +300,7 @@ class LANDFALL_OT_toggle_xray_object(bpy.types.Operator):
         active = context.view_layer.objects.active
         if not objs and active is not None:
             objs = [active]
+        objs = _own(objs)
         if not objs:
             self.report({"WARNING"}, "No object selected")
             return {"CANCELLED"}
@@ -298,10 +338,20 @@ class LANDFALL_OT_toggle_wireframe(bpy.types.Operator):
 class LANDFALL_OT_hide_selected(bpy.types.Operator):
     bl_idname = "landfall.hide_selected"
     bl_label = "Hide selection"
-    bl_description = "Hide the selected objects and remember which"
+    bl_description = ("Hide the selected objects and remember which. In Edit "
+                      "Mode, hide the selected faces, edges or vertices")
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        if context.mode == "EDIT_MESH":
+            # Hiding the object you are editing left you in Edit Mode on
+            # something invisible. Components are what Hide means here.
+            try:
+                bpy.ops.mesh.hide(unselected=False)
+            except RuntimeError as err:
+                self.report({"WARNING"}, str(err).replace("Error: ", ""))
+                return {"CANCELLED"}
+            return {"FINISHED"}
         objs = [o for o in context.selected_objects if not o.hide_get()]
         if not objs:
             self.report({"WARNING"}, "No object selected")
@@ -319,6 +369,8 @@ class LANDFALL_OT_show_selected(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        if context.mode == "EDIT_MESH":
+            return _reveal_mesh(self, context)
         shown = 0
         targets = [o for o in context.view_layer.objects if o.select_get()]
         active = context.view_layer.objects.active
@@ -340,10 +392,13 @@ class LANDFALL_OT_show_selected(bpy.types.Operator):
 class LANDFALL_OT_show_all(bpy.types.Operator):
     bl_idname = "landfall.show_all"
     bl_label = "Show all"
-    bl_description = "Unhide every object in the view layer"
+    bl_description = ("Unhide every object in the view layer. In Edit Mode, "
+                      "unhide every hidden part of the mesh")
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        if context.mode == "EDIT_MESH":
+            return _reveal_mesh(self, context)
         n = 0
         for o in context.view_layer.objects:
             if o.hide_get():
@@ -354,12 +409,34 @@ class LANDFALL_OT_show_all(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _reveal_mesh(op, context):
+    try:
+        bpy.ops.mesh.reveal(select=False)
+    except RuntimeError as err:
+        op.report({"WARNING"}, str(err).replace("Error: ", ""))
+        return {"CANCELLED"}
+    return {"FINISHED"}
+
+
 class LANDFALL_OT_isolate(bpy.types.Operator):
     bl_idname = "landfall.isolate"
     bl_label = "Isolate"
-    bl_description = "Toggle Local View on the 3D viewport"
+    bl_description = ("Toggle Local View on the 3D viewport. In Edit Mode, "
+                      "hide everything but the selection; again to show it back")
 
     def execute(self, context):
+        if context.mode == "EDIT_MESH":
+            # Local View works on objects. Isolating a selection of faces
+            # is hiding the rest, and the second press brings them back.
+            try:
+                if _edit_mesh_hidden(context):
+                    bpy.ops.mesh.reveal(select=False)
+                else:
+                    bpy.ops.mesh.hide(unselected=True)
+            except RuntimeError as err:
+                self.report({"WARNING"}, str(err).replace("Error: ", ""))
+                return {"CANCELLED"}
+            return {"FINISHED"}
         area, region = _view3d_area(context)
         if area is None:
             self.report({"WARNING"}, "No 3D viewport on this screen")
@@ -376,6 +453,8 @@ class LANDFALL_OT_show_last_hidden(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        if context.mode == "EDIT_MESH":
+            return _reveal_mesh(self, context)
         raw = context.scene.get("landfall_last_hidden", "")
         names = [n for n in raw.split("\n") if n]
         if not names:
@@ -385,7 +464,9 @@ class LANDFALL_OT_show_last_hidden(bpy.types.Operator):
         _safe(bpy.ops.object.select_all, action="DESELECT")
         restored = 0
         for name in names:
-            o = context.scene.objects.get(name)
+            o = context.view_layer.objects.get(name)
+            # view_layer, not scene: an object whose collection was excluded
+            # from the view layer in the meantime raises on hide_get.
             if o is not None and o.hide_get():
                 o.hide_set(False)
                 o.select_set(True)
@@ -493,9 +574,20 @@ def _changed_keys(depsgraph):
                     # object as changed, or the refresh would feed itself.
                     _self_sync.discard(key)
                     continue
-                geometry = True
                 if key in _border_recent:
                     _edit_dirty.add(key)
+                # Every stroke of an edit is a geometry update, and the
+                # object scan cannot change from one: what it reads —
+                # visibility, selection, the modifier stack — is not what
+                # editing touches. Only geometry updates from Object Mode
+                # (a modifier added or removed) make the scan stale.
+                # Without this, dragging a vertex on a big scene walked
+                # every object on every frame.
+                try:
+                    if update.id.original.mode != "EDIT":
+                        geometry = True
+                except Exception:
+                    geometry = True
             elif not update.is_updated_transform:
                 continue
             keys.add(update.id.original.as_pointer())
@@ -521,6 +613,7 @@ def _invalidate(cache, keys):
     return dropped
 
 
+@persistent
 def _clear_all_caches(*args):
     """Undo and redo rebuild the datablocks, so every address we hold may now
     belong to something else. Nothing survives that."""
@@ -608,6 +701,7 @@ def _scan_objects(context):
     return _scan
 
 
+@persistent
 def _on_depsgraph(scene=None, depsgraph=None):
     """One handler for both overlays instead of two reading the same updates.
 
@@ -690,10 +784,13 @@ def _border_coords(obj, context):
                     _border_cache[key] = stale
                     return stale
                 if now - last < wait:
-                    # Changed, but too soon: keep the last result and come
+                    # Changed, but too soon: show the last result and come
                     # back when the interval is over, even if the mouse has
                     # stopped by then and nothing else asks for a redraw.
-                    _border_cache[key] = stale
+                    # The stale result is not put in the cache: it used to
+                    # be, and then the deferred redraw found the key cached
+                    # and never recomputed, so the last position of a quick
+                    # drag stayed behind until the next edit.
                     _redraw_later(wait - (now - last))
                     return stale
             fresh_at = now
@@ -833,6 +930,7 @@ def _border_show_update(self, context):
     _redraw_view3d(context)
 
 
+@persistent
 def _grid_sync(*args):
     """Bring the drawing in line with the saved property.
 
@@ -913,7 +1011,7 @@ SHEET_BLENDER = (
 
 _sheet = {"handle": None, "x": 60.0, "y": 120.0, "close": None,
           "drag": None, "running": False, "w": 0.0, "h": 0.0,
-          "rows": None, "rows_at": 0.0, "rows_nav": None}
+          "rows": None, "rows_at": 0.0, "rows_nav": None, "region": None}
 
 # The sheet reads every key from the live keymap, which is the point of it,
 # but a full scan of the user configuration is four thousand entries and
@@ -996,6 +1094,9 @@ def _text_w(font, size, text):
 def _draw_sheet():
     context = bpy.context
     if not _sheet["running"]:
+        return
+    region = getattr(context, "region", None)
+    if _sheet["region"] is not None and region != _sheet["region"]:
         return
 
     font = 0
@@ -1107,6 +1208,7 @@ def _sheet_stop():
     _sheet["running"] = False
     _sheet["drag"] = None
     _sheet["rows"] = None
+    _sheet["region"] = None
 
 
 # Sampled from a Maya screenshot: background #5C5C5C, selection #43FFA3,
@@ -1317,7 +1419,7 @@ class LANDFALL_OT_object_color(bpy.types.Operator):
     clear: bpy.props.BoolProperty(default=False, options={"SKIP_SAVE"})
 
     def execute(self, context):
-        objs = list(context.selected_objects)
+        objs = _own(context.selected_objects)
         if not objs:
             self.report({"WARNING"}, "No object selected")
             return {"CANCELLED"}
@@ -1498,6 +1600,8 @@ def _theme_restore(context, theme, p):
         if not _safe(bpy.ops.preferences.reset_default_theme):
             return False, "Could not reset the theme"
         _theme_backup_write(p, "")
+        if p is not None:
+            p.colors_wanted = False
         _safe(bpy.ops.wm.save_userpref)
         return True, "Theme reset to Blender's defaults"
 
@@ -1532,6 +1636,8 @@ def _theme_restore(context, theme, p):
                 pass
 
     _theme_backup_write(p, "")
+    if p is not None:
+        p.colors_wanted = False
     try:
         context.scene.landfall_grid_finite = False
     except Exception:
@@ -1604,6 +1710,8 @@ def _theme_apply(context, theme, p):
     except Exception as err:
         return False, "Theme not writable: %s" % err
 
+    if p is not None:
+        p.colors_wanted = True
     try:
         context.scene.landfall_grid_finite = True
     except Exception:
@@ -1662,9 +1770,30 @@ class LANDFALL_OT_toggle_gizmos(bpy.types.Operator):
         if not spaces:
             self.report({"WARNING"}, "No 3D viewport on this screen")
             return {"CANCELLED"}
-        state = not spaces[0].show_gizmo
-        for space in spaces:
-            space.show_gizmo = state
+        # Only the three transform gizmos. The master switch also took the
+        # navigation gizmo in the corner with it, which nobody asked for.
+        on = any(getattr(spaces[0], f) for f in GIZMO_FLAGS)
+        p = prefs(context)
+        if on:
+            wanted = (False, False, False)
+        elif p is not None and any(p.gizmo_flags):
+            wanted = tuple(p.gizmo_flags)
+        else:
+            wanted = (True, False, False)
+        targets = spaces
+        if p is not None and p.maya_gizmos:
+            # One choice for every workspace, and the start-up rounds must
+            # not undo it a second later.
+            targets = _all_workspace_view3d()
+            _gizmos_attempts[0] = GIZMO_ROUNDS
+        for space in targets:
+            try:
+                space.show_gizmo = True
+                for flag, value in zip(GIZMO_FLAGS, wanted):
+                    setattr(space, flag, value)
+            except Exception:
+                continue
+        _redraw_view3d(context)
         return {"FINISHED"}
 
 
@@ -1685,6 +1814,7 @@ class LANDFALL_OT_cheatsheet(bpy.types.Operator):
             return {"CANCELLED"}
 
         _sheet["running"] = True
+        _sheet["region"] = region
         _sheet["handle"] = bpy.types.SpaceView3D.draw_handler_add(
             _draw_sheet, (), "WINDOW", "POST_PIXEL"
         )
@@ -1692,6 +1822,10 @@ class LANDFALL_OT_cheatsheet(bpy.types.Operator):
             context.window_manager.modal_handler_add(self)
         self._redraw(context)
         return {"RUNNING_MODAL"}
+
+    def cancel(self, context):
+        _sheet_stop()
+        self._redraw(context)
 
     def _redraw(self, context):
         _redraw_view3d(context)
@@ -1928,7 +2062,7 @@ def _mm_base(context):
 
 
 _mm = {"open": False, "handle": None, "x": 0.0, "y": 0.0,
-       "area": None, "region": None,
+       "area": None, "region": None, "window": None,
        "list": "base_object", "anchor": None, "hot": None, "rects": [],
        "layout": None, "hot_key": "?", "hot_ring": None, "hot_rect": None}
 
@@ -1944,7 +2078,7 @@ def _mm_reopen(x, y, area, region):
     def go():
         _mm["pending"] = (x, y)
         try:
-            with bpy.context.temp_override(area=area, region=region):
+            with bpy.context.temp_override(**_mm_override(area, region)):
                 bpy.ops.landfall.marking_menu("INVOKE_DEFAULT")
         except Exception as err:
             _mm["pending"] = None
@@ -1958,6 +2092,25 @@ def _mm_wants_reopen(path, props):
     if p is None or not p.chain_after_edit:
         return False
     return path == "object.mode_set" and props.get("mode") == "EDIT"
+
+
+def _mm_override(area, region):
+    """The context for a command run from a timer.
+
+    A timer runs in the first window. With the menu open in a second
+    Blender window, an override naming only the area failed with "Area not
+    found in screen" and the command never ran; the window has to be named
+    too.
+    """
+    over = {"area": area, "region": region}
+    win = _mm.get("window")
+    if win is not None:
+        try:
+            if area in win.screen.areas[:]:
+                over["window"] = win
+        except Exception:
+            pass
+    return over
 
 
 def _mm_run(path, props, area=None, region=None, x=0.0, y=0.0):
@@ -1974,7 +2127,7 @@ def _mm_run(path, props, area=None, region=None, x=0.0, y=0.0):
             module, name = path.split(".", 1)
             op = getattr(getattr(bpy.ops, module), name)
             if area is not None and region is not None:
-                with bpy.context.temp_override(area=area, region=region):
+                with bpy.context.temp_override(**_mm_override(area, region)):
                     op("INVOKE_DEFAULT", **props)
             else:
                 op("INVOKE_DEFAULT", **props)
@@ -2095,7 +2248,13 @@ def _mm_draw():
     if not _mm["open"]:
         return
     context = bpy.context
-    if getattr(context, "region", None) is None:
+    region = getattr(context, "region", None)
+    if region is None:
+        return
+    # Only the viewport it was opened in: the draw handler runs for every
+    # 3D viewport and every quad-view region, and the ring appeared in all
+    # of them at the same offset, where the mouse meant nothing.
+    if _mm["region"] is not None and region != _mm["region"]:
         return
     if _mm.get("layout") is None:
         _mm_layout(context)
@@ -2270,13 +2429,23 @@ class LANDFALL_OT_self_check(bpy.types.Operator):
 
         # Truncated user keymaps: the same survey the startup repair uses,
         # so the two can never disagree about what counts as broken.
-        for km, native, expected in _keymap_survey():
+        for name, native, expected in _keymap_survey():
             bad += 1
             lines.append(
                 "FAIL  the user keymap '%s' holds %d of %d stock shortcuts "
-                "and hides the rest. Restart Blender to have it rebuilt, or "
-                "press Restore on that entry in Preferences > Keymap"
-                % (km.name, native, expected))
+                "and hides the rest. Change mode or restart Blender to have "
+                "it rebuilt, or press Restore on that entry in Preferences > "
+                "Keymap" % (name, native, expected))
+        for name, idname, keys in _keymap_unmirrored():
+            bad += 1
+            lines.append(
+                "FAIL  the user keymap '%s' has no active copy of our %s on "
+                "%s. Change mode or restart Blender to have it rebuilt"
+                % (name, idname, keys))
+        for km, kmi, name in _keymap_stale_entries():
+            lines.append("NOTE  '%s' still has %s calling the removed menu %s; "
+                         "it is removed at the next repair"
+                         % (km.name, kmi.to_string(), name))
 
         # Every keymap name we write into must exist in Blender's own
         # configuration: keymaps.new() creates a missing one silently, and
@@ -2293,25 +2462,41 @@ class LANDFALL_OT_self_check(bpy.types.Operator):
         # Our shortcuts that sit on top of one of Blender's own, in the same
         # keymap. The ones listed in SHADOWS_INTENDED are replacements made
         # on purpose and documented; anything else is worth knowing about.
+        # Not only the keymap with the same name: a key pressed in Edit
+        # Mode is looked up in Mesh, then Object Non-modal, 3D View, Screen
+        # and Window, and an entry of ours in Mesh hides an entry of
+        # Blender's in any of them. Checking the same name only, Alt+Q
+        # over Transfer Mode and Alt+W over the tool pie were never seen.
         notes = []
+        seen = set()
         if kc.addon and kc.default:
             for km in kc.addon.keymaps:
-                dkm = kc.default.keymaps.get(km.name)
-                if dkm is None:
-                    continue
+                chain = _keymap_chain(km.name)
                 for k in km.keymap_items:
-                    if not (_keymap_is_ours(k) or k.idname in NAV_IDNAMES):
+                    if not _kmi_registered_by_us(km.name, k):
                         continue
-                    for d in dkm.keymap_items:
-                        if d.active and _kmi_signature(d) == _kmi_signature(k):
-                            pair = (km.name, k.type, bool(k.ctrl),
-                                    bool(k.alt), bool(k.shift))
-                            if pair not in SHADOWS_INTENDED and not (
-                                    k.alt and k.type.endswith("MOUSE")):
-                                notes.append("NOTE  %s: our %s on %s hides "
-                                             "Blender's %s" % (km.name, k.idname,
-                                                                k.to_string(),
-                                                                d.idname))
+                    pair = (km.name, k.type, bool(k.ctrl), bool(k.alt),
+                            bool(k.shift))
+                    if pair in SHADOWS_INTENDED or (
+                            k.alt and k.type.endswith("MOUSE")):
+                        continue
+                    for dname in chain:
+                        dkm = kc.default.keymaps.get(dname)
+                        if dkm is None:
+                            continue
+                        hit = next((d for d in dkm.keymap_items if d.active
+                                    and _kmi_signature(d) == _kmi_signature(k)),
+                                   None)
+                        if hit is None:
+                            continue
+                        mark = (k.to_string(), hit.idname, dname)
+                        if mark not in seen:
+                            seen.add(mark)
+                            notes.append("NOTE  %s: our %s on %s hides "
+                                         "Blender's %s (%s)"
+                                         % (km.name, k.idname, k.to_string(),
+                                            hit.idname, dname))
+                        break
         lines.extend(notes)
 
         lines.insert(2, "RESULT: %s" % ("all passed" if not bad
@@ -2402,6 +2587,10 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
     taper: bpy.props.FloatProperty(
         name="Taper", description="Scale of the far end. 1 keeps the size, "
         "below 1 narrows it", default=1.0, min=0.0, soft_max=3.0, options={"SKIP_SAVE"})
+    # From the panel button the extrusion is complete in itself and the
+    # divisions are spread right away. As the first step of E the spread
+    # waits for the move, and the macro sets this off.
+    then_spread: bpy.props.BoolProperty(default=True, options={"SKIP_SAVE", "HIDDEN"})
 
     @classmethod
     def poll(cls, context):
@@ -2410,30 +2599,77 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
                 and context.mode == "EDIT_MESH")
 
     def execute(self, context):
-        obj = context.active_object
-        bm = bmesh.from_edit_mesh(obj.data)
-        facce = [f for f in bm.faces if f.select]
-        if not facce:
-            self.report({"WARNING"}, "Select at least one face")
+        # Every object being edited, not just the active one. With two
+        # objects in Edit Mode the active one got its walls and the other
+        # merely had its selected faces pushed out by the move that follows.
+        done = 0
+        for obj in context.objects_in_mode_unique_data:
+            if obj.type != "MESH":
+                continue
+            outcome = self._extrude_object(obj)
+            if outcome is None:
+                return {"CANCELLED"}
+            done += outcome
+            # The spread step reads these from the mesh: a macro does not
+            # hand one step's values to the next, and the redo panel re-runs
+            # both steps from the state before the first.
+            obj.data[SPREAD_PROP] = [float(max(1, self.divisions)),
+                                     float(self.twist), float(self.taper)]
+        if not done:
+            self.report({"WARNING"}, "Nothing selected to extrude")
             return {"CANCELLED"}
+        if self.then_spread:
+            _spread_objects(context, self)
+        return {"FINISHED"}
 
+    def _extrude_object(self, obj):
+        """One object. Returns how many extrusions were made, or None on
+        failure (already reported)."""
+        bm = bmesh.from_edit_mesh(obj.data)
+        _spread_layers_drop(bm)
+        facce = [f for f in bm.faces if f.select]
         try:
+            if not facce:
+                # No face: edges or vertices. Blender's own E handles those
+                # and the E on this key used to refuse them outright.
+                edges = [e for e in bm.edges if e.select]
+                verts = [v for v in bm.verts if v.select]
+                if edges:
+                    ret = bmesh.ops.extrude_edge_only(bm, edges=edges)
+                    fresh = [g for g in ret["geom"]
+                             if isinstance(g, bmesh.types.BMVert)]
+                elif verts:
+                    # Returns "verts" and "edges", not "geom".
+                    ret = bmesh.ops.extrude_vert_indiv(bm, verts=verts)
+                    fresh = list(ret["verts"])
+                else:
+                    return 0
+                for g in bm.verts:
+                    g.select_set(False)
+                for g in fresh:
+                    g.select_set(True)
+                bm.select_flush_mode()
+                bmesh.update_edit_mesh(obj.data, loop_triangles=True,
+                                       destructive=True)
+                return 1
+
             if self.offset:
                 bmesh.ops.inset_region(
                     bm, faces=facce, thickness=abs(self.offset),
                     depth=0.0, use_even_offset=True, use_boundary=True)
                 facce = [f for f in bm.faces if f.select]
 
+            layers = _spread_layers(bm)
             # I cappelli si raccolgono e si selezionano una volta sola alla
             # fine: selezionandoli dentro il ciclo, ogni faccia azzerava la
             # selezione della precedente e con Keep Faces Together spento ne
             # restava selezionata una sola invece di tutte.
             cappelli = []
             if self.keep_together:
-                cappelli += self._estrudi(bm, facce)
+                cappelli += self._estrudi(bm, facce, layers, 1)
             else:
-                for f in list(facce):
-                    cappelli += self._estrudi(bm, [f])
+                for n, f in enumerate(list(facce), 1):
+                    cappelli += self._estrudi(bm, [f], layers, n)
 
             for f in bm.faces:
                 f.select_set(False)
@@ -2449,18 +2685,21 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
             bmesh.update_edit_mesh(obj.data, loop_triangles=True,
                                    destructive=True)
             self.report({"ERROR"}, "Extrude failed: %s" % err)
-            return {"CANCELLED"}
+            return None
 
         bmesh.update_edit_mesh(obj.data, loop_triangles=True, destructive=True)
-        return {"FINISHED"}
+        return 1
 
-    def _estrudi(self, bm, facce):
+    def _estrudi(self, bm, facce, layers, gruppo):
         """One extrusion, divided into the requested number of segments.
 
-        Each segment moves by its share of the thickness and takes its share
-        of the twist and the taper, so the parameters describe the whole
-        extrusion rather than each step. Returns the faces at the far end, for
-        the caller to select once every extrusion is done.
+        Each segment moves by its share of the thickness. Divisions, twist and
+        taper are finished by the spread step after the move: only then is
+        the distance known when it comes from the mouse. Every vertex made
+        here is tagged with its group, its chain (the base vertex it grew
+        from) and its step, so the spread step can find the rings again.
+        Returns the faces at the far end, for the caller to select once every
+        extrusion is done.
         """
         passi = max(1, self.divisions)
         normale_grezza = mathutils.Vector((0.0, 0.0, 0.0))
@@ -2471,18 +2710,27 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
             normale = mathutils.Vector(facce[0].normal)
         normale.normalize()
 
-        # The averaged normal survives only as the twist axis and as a
-        # fallback: on a closed surface it cancels out, and rotating around a
-        # vector that does not exist means nothing.
-        asse_valido = normale_grezza.length > 1e-9
-
         salto = self.thickness / passi
-        giro = self.twist / passi if asse_valido else 0.0
-        # Per-step scale whose product over the steps is exactly the taper.
-        scala = self.taper ** (1.0 / passi) if self.taper > 0 else 0.0
         correnti = list(facce)
+        l_gruppo, l_catena, l_passo, l_base, l_normale = layers
 
-        for _ in range(passi):
+        # The base ring: every vertex of the faces about to grow gets a
+        # chain number, and every vertex grown from it later carries that
+        # number and the base position. The base vertex itself is not
+        # tagged: with Keep Faces Together off a vertex shared by two
+        # faces is the base of two chains at once.
+        catene = {}
+        basi = {}
+        for f in facce:
+            for v in f.verts:
+                if v not in catene:
+                    catene[v] = len(catene) + 1
+                    basi[catene[v]] = mathutils.Vector(v.co)
+        catena_di = {}
+        for v, n in catene.items():
+            catena_di[tuple(round(c, 5) for c in v.co)] = n
+
+        for passo in range(1, passi + 1):
             # Directions are worked out from the faces about to be extruded,
             # not from the caps recognised afterwards.
             #
@@ -2500,28 +2748,32 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
             # 0.289, which is 0.5 over the square root of three. On a flat
             # face the cosine is one and nothing changes.
             direzioni = {}
-            if salto:
-                insieme_correnti = set(correnti)
+            if passo > 1:
+                catena_di = {}
                 for f in correnti:
                     for v in f.verts:
-                        chiave = tuple(round(c, 5) for c in v.co)
-                        if chiave in direzioni:
-                            continue
-                        vicine = [g for g in v.link_faces
-                                  if g in insieme_correnti]
-                        direzione = mathutils.Vector((0.0, 0.0, 0.0))
-                        for g in vicine:
-                            direzione += g.normal * g.calc_area()
-                        if direzione.length < 1e-9:
-                            direzione = mathutils.Vector(normale)
-                        direzione.normalize()
-                        fattore = 1.0
-                        if vicine:
-                            coseno = sum(direzione.dot(g.normal)
-                                         for g in vicine) / len(vicine)
-                            if coseno > 0.05:
-                                fattore = 1.0 / coseno
-                        direzioni[chiave] = direzione * (salto * fattore)
+                        catena_di[tuple(round(c, 5) for c in v.co)] = v[l_catena]
+            insieme_correnti = set(correnti)
+            for f in correnti:
+                for v in f.verts:
+                    chiave = tuple(round(c, 5) for c in v.co)
+                    if chiave in direzioni or not salto:
+                        continue
+                    vicine = [g for g in v.link_faces
+                              if g in insieme_correnti]
+                    direzione = mathutils.Vector((0.0, 0.0, 0.0))
+                    for g in vicine:
+                        direzione += g.normal * g.calc_area()
+                    if direzione.length < 1e-9:
+                        direzione = mathutils.Vector(normale)
+                    direzione.normalize()
+                    fattore = 1.0
+                    if vicine:
+                        coseno = sum(direzione.dot(g.normal)
+                                     for g in vicine) / len(vicine)
+                        if coseno > 0.05:
+                            fattore = 1.0 / coseno
+                    direzioni[chiave] = direzione * (salto * fattore)
 
             ret = bmesh.ops.extrude_face_region(bm, geom=correnti)
             nuovi = [g for g in ret["geom"]
@@ -2547,31 +2799,193 @@ class LANDFALL_OT_extrude_options(bpy.types.Operator):
                 bmesh.ops.delete(bm, geom=vecchie, context="FACES")
 
             # Straight after the extrusion the new vertices sit exactly on top
-            # of the originals, so the directions worked out before are found
-            # again by coordinate.
-            if salto:
-                for v in nuovi:
-                    delta = direzioni.get(tuple(round(c, 5) for c in v.co))
+            # of the originals, so the chain and the direction worked out
+            # before are found again by coordinate.
+            for v in nuovi:
+                chiave = tuple(round(c, 5) for c in v.co)
+                n = catena_di.get(chiave, 0)
+                v[l_gruppo] = gruppo
+                v[l_catena] = n
+                v[l_passo] = passo
+                v[l_base] = basi.get(n, v.co)
+                v[l_normale] = normale
+                if salto:
+                    delta = direzioni.get(chiave)
                     if delta is not None:
                         v.co += delta
-
-            centro = mathutils.Vector((0.0, 0.0, 0.0))
-            for v in nuovi:
-                centro += v.co
-            centro /= len(nuovi)
-
-            if abs(scala - 1.0) > 1e-9:
-                bmesh.ops.scale(
-                    bm, verts=nuovi, vec=(scala, scala, scala),
-                    space=mathutils.Matrix.Translation(-centro))
-            if abs(giro) > 1e-9:
-                bmesh.ops.rotate(
-                    bm, verts=nuovi, cent=centro,
-                    matrix=mathutils.Matrix.Rotation(giro, 3, normale))
+            if salto:
+                # The next step reads the normals of these faces, and they
+                # are stale after the move.
+                bm.normal_update()
 
             correnti = cappello
 
         return correnti
+
+
+SPREAD_LAYERS = ("lf_group", "lf_chain", "lf_step")
+SPREAD_VECTORS = ("lf_base", "lf_normal")
+SPREAD_PROP = "landfall_spread"
+
+
+def _spread_objects(context, op):
+    """Spread the divisions of every mesh being edited, then drop the tags."""
+    for obj in context.objects_in_mode_unique_data:
+        if obj.type != "MESH":
+            continue
+        values = obj.data.get(SPREAD_PROP)
+        bm = bmesh.from_edit_mesh(obj.data)
+        if values is not None and len(values) == 3:
+            try:
+                _spread_mesh(bm, int(values[0]), float(values[1]), float(values[2]))
+            except Exception as err:
+                op.report({"WARNING"}, "Spread failed: %s" % err)
+        _spread_layers_drop(bm)
+        if SPREAD_PROP in obj.data:
+            del obj.data[SPREAD_PROP]
+        bmesh.update_edit_mesh(obj.data, loop_triangles=True, destructive=False)
+
+
+def _spread_layers(bm):
+    """The per-vertex tags the extrusion leaves for the spread step."""
+    ints = [bm.verts.layers.int.get(n) or bm.verts.layers.int.new(n)
+            for n in SPREAD_LAYERS]
+    vecs = [bm.verts.layers.float_vector.get(n)
+            or bm.verts.layers.float_vector.new(n) for n in SPREAD_VECTORS]
+    return ints + vecs
+
+
+def _spread_layers_drop(bm):
+    """Remove the tags: a cancelled move can leave them behind."""
+    for n in SPREAD_LAYERS:
+        layer = bm.verts.layers.int.get(n)
+        if layer is not None:
+            bm.verts.layers.int.remove(layer)
+    for n in SPREAD_VECTORS:
+        layer = bm.verts.layers.float_vector.get(n)
+        if layer is not None:
+            bm.verts.layers.float_vector.remove(layer)
+
+
+class LANDFALL_OT_extrude_spread(bpy.types.Operator):
+    """The last step of E: divisions, twist and taper over the distance the
+    mouse has just set.
+
+    The extrusion runs before the move, so it cannot know the distance;
+    it used to divide a thickness of zero and stack every intermediate ring
+    on the base. Now it only tags the rings, the move sets the far end, and
+    this step places each ring at its share of the way, then twists and
+    tapers it by its share. Runs again with the rest of the macro on every
+    change in the adjust panel.
+    """
+    bl_idname = "landfall.extrude_spread"
+    bl_label = "Spread extrusion"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "EDIT_MESH"
+
+    def execute(self, context):
+        _spread_objects(context, self)
+        return {"FINISHED"}
+
+
+def _spread_mesh(bm, passi, twist, taper):
+    l_gruppo = bm.verts.layers.int.get(SPREAD_LAYERS[0])
+    l_catena = bm.verts.layers.int.get(SPREAD_LAYERS[1])
+    l_passo = bm.verts.layers.int.get(SPREAD_LAYERS[2])
+    l_base = bm.verts.layers.float_vector.get(SPREAD_VECTORS[0])
+    l_normale = bm.verts.layers.float_vector.get(SPREAD_VECTORS[1])
+    if None in (l_gruppo, l_catena, l_passo, l_base, l_normale):
+        return
+    passi = max(1, passi)
+    # Chains: for each group and base vertex, the ring vertices by step.
+    gruppi = {}
+    for v in bm.verts:
+        g = v[l_gruppo]
+        if g <= 0:
+            continue
+        gruppi.setdefault(g, {}).setdefault(v[l_catena], {})[v[l_passo]] = v
+    for g, catene in gruppi.items():
+        # The far end is what the mouse moved; everything between is placed
+        # by its share of the way from the base position to the far end.
+        for passo_v in catene.values():
+            cima = passo_v.get(passi)
+            if cima is None:
+                continue
+            base = mathutils.Vector(cima[l_base])
+            for passo, v in passo_v.items():
+                if 0 < passo < passi:
+                    v.co = base.lerp(cima.co, passo / passi)
+        if abs(twist) < 1e-9 and abs(taper - 1.0) < 1e-9:
+            continue
+        # Twist and taper, each ring by its share, about the axis that runs
+        # from the base centre to the far-end centre.
+        anelli = {}
+        basi = []
+        for passo_v in catene.values():
+            for passo, v in passo_v.items():
+                anelli.setdefault(passo, []).append(v)
+            cima = passo_v.get(passi)
+            if cima is not None:
+                basi.append(mathutils.Vector(cima[l_base]))
+        cima_ring = anelli.get(passi)
+        if not basi or not cima_ring:
+            continue
+        c0 = sum(basi, mathutils.Vector()) / len(basi)
+        c1 = sum((v.co for v in cima_ring), mathutils.Vector()) / len(cima_ring)
+        asse = c1 - c0
+        if asse.length < 1e-9:
+            asse = mathutils.Vector(cima_ring[0][l_normale])
+        if asse.length < 1e-9:
+            continue
+        asse.normalize()
+        for passo, ring in anelli.items():
+            quota = passo / passi
+            centro = sum((v.co for v in ring), mathutils.Vector()) / len(ring)
+            scala = taper ** quota if taper > 0 else 0.0
+            if abs(scala - 1.0) > 1e-9:
+                bmesh.ops.scale(bm, verts=ring, vec=(scala, scala, scala),
+                                space=mathutils.Matrix.Translation(-centro))
+            giro = twist * quota
+            if abs(giro) > 1e-9:
+                bmesh.ops.rotate(bm, verts=ring, cent=centro,
+                                 matrix=mathutils.Matrix.Rotation(giro, 3, asse))
+    bm.normal_update()
+
+
+class LANDFALL_OT_extrude(bpy.types.Operator):
+    """What E does: faces go through our extrusion with Maya's options,
+    edges and vertices through Blender's own, which knows how to move
+    them (a lone edge along its normal, the rest free)."""
+    bl_idname = "landfall.extrude"
+    bl_label = "Extrude"
+    bl_description = ("Extrude the selection. Faces get Maya's options "
+                      "(thickness, offset, divisions, twist, taper); edges "
+                      "and vertices extrude as in Blender")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "EDIT_MESH"
+
+    def invoke(self, context, event):
+        faces = edges_or_verts = False
+        for obj in context.objects_in_mode_unique_data:
+            if obj.type != "MESH":
+                continue
+            bm = bmesh.from_edit_mesh(obj.data)
+            if any(f.select for f in bm.faces):
+                faces = True
+                break
+            if any(v.select for v in bm.verts):
+                edges_or_verts = True
+        if faces:
+            return bpy.ops.landfall.extrude_move("INVOKE_REGION_WIN")
+        if edges_or_verts:
+            return bpy.ops.view3d.edit_mesh_extrude_move_normal("INVOKE_REGION_WIN")
+        self.report({"WARNING"}, "Nothing selected to extrude")
+        return {"CANCELLED"}
 
 
 class LANDFALL_OT_extrude_move(bpy.types.Macro):
@@ -2596,7 +3010,8 @@ def _define_macro():
     """A macro's steps can only be defined once the classes they name are
     registered, so this runs after register_class, not at import time."""
     try:
-        LANDFALL_OT_extrude_move.define("LANDFALL_OT_extrude_options")
+        primo = LANDFALL_OT_extrude_move.define("LANDFALL_OT_extrude_options")
+        primo.properties.then_spread = False
         passo = LANDFALL_OT_extrude_move.define("TRANSFORM_OT_translate")
         passo.properties.orient_type = "NORMAL"
         passo.properties.constraint_axis = (False, False, True)
@@ -2604,6 +3019,9 @@ def _define_macro():
         # released, so a normal tap of E extruded at distance zero and the
         # mouse never got to set it. Blender's own E does not set it either:
         # press E, move, click or Enter.
+        # The spread step runs after the move, reading divisions, twist and
+        # taper from where the first step left them on the mesh.
+        LANDFALL_OT_extrude_move.define("LANDFALL_OT_extrude_spread")
     except Exception as err:
         print("[landfall] could not build the extrude macro: %s" % err)
 
@@ -2675,11 +3093,11 @@ def _extrude_enable(context):
     _set_native_extrude(False)
     try:
         km = kc.keymaps.new(name="Mesh", space_type="EMPTY")
-        kmi = km.keymap_items.new("landfall.extrude_move", "E", "PRESS")
+        kmi = km.keymap_items.new("landfall.extrude", "E", "PRESS")
         _extrude_keymaps.append((km, kmi))
     except Exception:
         pass
-    _wake_user_kmi("landfall.extrude_move")
+    _wake_user_kmi("landfall.extrude")
 
 
 def _extrude_disable():
@@ -2736,6 +3154,7 @@ class LANDFALL_OT_marking_menu(bpy.types.Operator):
 
         _mm["area"] = context.area
         _mm["region"] = context.region
+        _mm["window"] = context.window
         pending = _mm.pop("pending", None)
         px, py = pending if pending else (event.mouse_region_x,
                                           event.mouse_region_y)
@@ -2752,6 +3171,12 @@ class LANDFALL_OT_marking_menu(bpy.types.Operator):
         _mm_stop()
         if context.area:
             context.area.tag_redraw()
+
+    def cancel(self, context):
+        # Blender calls this when it drops the modal handler on its own —
+        # the window closed, a file loaded — and the draw handler would
+        # otherwise keep painting a menu nobody can close.
+        _mm_stop()
 
     def modal(self, context, event):
         if not _mm["open"]:
@@ -2896,20 +3321,31 @@ MAYA_NAV_MUTE = (
 _nav_keymaps = []
 
 
-def _apply_navigation_prefs(context):
-    """Turn on the viewport options that make Blender feel like Maya."""
+# The four input preferences Maya navigation sets, with Maya's value and
+# Blender's factory value. Landfall on means all four Maya's; Landfall off,
+# or gone, means all four Blender's: not "whatever was there before",
+# which is unknowable after a reinstall and was never put back anyway.
+NAV_INPUT_PREFS = {
+    "use_rotate_around_active": (True, False),
+    "use_mouse_depth_navigate": (True, False),
+    "use_zoom_to_mouse": (True, False),
+    "use_mouse_emulate_3_button": (False, False),
+}
+
+
+def _apply_navigation_prefs(context, maya=True):
+    """The viewport options that make Blender feel like Maya, or Blender's
+    own factory values when maya is False."""
     inputs = context.preferences.inputs
-    wanted = {
-        "use_rotate_around_active": True,
-        "use_mouse_depth_navigate": True,
-        "use_zoom_to_mouse": True,
-        "use_mouse_emulate_3_button": False,
-    }
-    for name, value in wanted.items():
+    for name, (maya_value, stock_value) in NAV_INPUT_PREFS.items():
         try:
-            setattr(inputs, name, value)
+            setattr(inputs, name, maya_value if maya else stock_value)
         except Exception:
             pass
+
+
+def _restore_navigation_prefs(context):
+    _apply_navigation_prefs(context, maya=False)
 
 
 GIZMO_FLAGS = ("show_gizmo_object_translate", "show_gizmo_object_rotate",
@@ -2936,21 +3372,33 @@ def _all_workspace_view3d():
     return out
 
 
-def _gizmos_apply(state):
-    """Maya keeps the manipulator on screen, so the three transform gizmos go
-    on everywhere rather than per workspace."""
+def _gizmos_apply(flags):
+    """The same transform gizmos in every workspace.
+
+    Blender keeps the choice per workspace, so Move could be on in Layout
+    and off in Modeling. This copies one choice — the preference's three
+    flags — to every viewport. It used to force all three on and the
+    master switch with them, so hiding a gizmo never lasted past the next
+    file and Alt+W took the navigation gizmo down too. Returns whether
+    anything had to change, so the start-up rounds can stop early.
+    """
+    changed = False
     for space in _all_workspace_view3d():
         try:
-            space.show_gizmo = True if state else space.show_gizmo
-            for flag in GIZMO_FLAGS:
-                setattr(space, flag, state)
+            for flag, value in zip(GIZMO_FLAGS, flags):
+                if getattr(space, flag) != value:
+                    setattr(space, flag, value)
+                    changed = True
         except Exception:
             continue
-    _redraw_view3d()
+    if changed:
+        _redraw_view3d()
+    return changed
 
 
 def _gizmos_update(self, context):
-    _gizmos_apply(self.maya_gizmos)
+    if self.maya_gizmos:
+        _gizmos_apply(tuple(self.gizmo_flags))
 
 
 # Same rounds as the keymap repair, for the same reason. A single pass 0.2 s
@@ -2967,14 +3415,20 @@ def _gizmos_sync():
     """Deferred, repeated, and again after loading a file: a new file brings
     its own workspaces, each with its own gizmo settings."""
     p = prefs(bpy.context)
-    if p is not None and p.maya_gizmos:
-        _gizmos_apply(True)
+    if p is None or not p.maya_gizmos:
+        return None
+    if _gizmos_attempts[0] >= GIZMO_ROUNDS:
+        # Alt+W ends the rounds early, so a choice made just after a file
+        # opened is not undone by the next round.
+        return None
+    _gizmos_apply(tuple(p.gizmo_flags))
     _gizmos_attempts[0] += 1
     if _gizmos_attempts[0] >= GIZMO_ROUNDS:
         return None
     return GIZMO_WAIT
 
 
+@persistent
 def _gizmos_load(*args):
     """Start the rounds again: a new file brings its own workspaces."""
     _gizmos_attempts[0] = 0
@@ -2998,9 +3452,22 @@ def _reapply_mutes():
             _wake_user_kmi("mesh.edgering_select", value="DOUBLE_CLICK")
         if p.maya_extrude:
             _set_native_extrude(False)
-            _wake_user_kmi("landfall.extrude_move")
+            _wake_user_kmi("landfall.extrude")
     except Exception as err:
         print("[landfall] could not re-apply the keymap mutings: %s" % err)
+
+
+# The keymaps Blender consults, in order, after the one a mode owns.
+KEYMAP_FALLBACKS = ("Object Non-modal", "3D View Generic", "3D View",
+                    "Frames", "Screen", "Window")
+
+
+def _keymap_chain(name):
+    if name == "Window":
+        return ("Window",)
+    if name in KEYMAP_FALLBACKS:
+        return (name,) + KEYMAP_FALLBACKS[KEYMAP_FALLBACKS.index(name) + 1:]
+    return (name,) + KEYMAP_FALLBACKS
 
 
 def _kmi_signature(kmi):
@@ -3017,17 +3484,49 @@ SHADOWS_INTENDED = {
     ("Mesh", "E", False, False, False),
     ("Window", "O", True, False, False),
     ("Window", "S", True, False, True),
+} | {
+    # The marking menu replaces Blender's mode pie on Ctrl+Tab by design,
+    # and the preference that turns it off gives the pie back.
+    (name, "TAB", True, False, False)
+    for name in ("Mesh", "Object Mode", "Sculpt", "Vertex Paint",
+                 "Weight Paint", "Image Paint")
 }
+
+# The keymaps the pies, the hotbox, Alt+W and the smooth levels go into.
+KEYMAP_TARGETS = (("3D View", "VIEW_3D"),) + tuple(
+    (name, "EMPTY") for name in (
+        "Object Mode", "Mesh", "Sculpt", "Vertex Paint", "Weight Paint",
+        "Image Paint", "Pose"))
 
 NAV_IDNAMES = {idname for idname, _k, _m in NAV_ITEMS} | {
     row[2] for row in MAYA_NAV_EXTRA} | {"object.delete", "curve.delete",
                                          "wm.call_menu"}
+OUR_KEYMAP_NAMES = ({name for name, _s in NAV_MODE_KEYMAPS}
+                    | {row[0] for row in MAYA_NAV_EXTRA}
+                    | {name for name, _s in KEYMAP_TARGETS}
+                    | {"Window", "Curve"})
 
 
 def _keymap_is_ours(kmi):
     if "landfall" in kmi.idname:
         return True
     return "landfall" in str(getattr(kmi.properties, "name", "") or "")
+
+
+def _kmi_registered_by_us(km_name, kmi):
+    """Ours, or one of Blender's operators that we bind ourselves (the
+    navigation, Backspace delete, F to frame) — but only in the keymaps we
+    write into. Other add-ons put wm.call_menu entries in the Node Editor,
+    and they were taken for ours."""
+    if km_name not in OUR_KEYMAP_NAMES:
+        return False
+    if _keymap_is_ours(kmi):
+        return True
+    if kmi.idname not in NAV_IDNAMES:
+        return False
+    if kmi.idname in ("wm.call_menu", "object.delete", "curve.delete"):
+        return kmi.type == "BACK_SPACE"
+    return True
 
 
 def _keymap_survey():
@@ -3056,7 +3555,64 @@ def _keymap_survey():
             continue
         native = sum(1 for k in km.keymap_items if not _keymap_is_ours(k))
         if native < len(stock.keymap_items) * 0.5:
-            out.append((km, native, len(stock.keymap_items)))
+            # The name and not the keymap: rebuilding one keymap makes
+            # Blender recreate every user keymap, and a keymap object kept
+            # from before the rebuild points at freed memory.
+            out.append((km.name, native, len(stock.keymap_items)))
+    return out
+
+
+def _keymap_unmirrored():
+    """User keymaps in which one of our add-on entries has no active copy.
+
+    Blender runs the user copy of an add-on entry, not the entry itself. A
+    user keymap saved with a diff can come back without the copy, and then
+    the shortcut is registered, listed in the report, and does nothing:
+    the Alt+mouse navigation was missing from the 3D View keymap exactly
+    like that. The survey above only counts, so it never saw it.
+    """
+    out = []
+    try:
+        kc = bpy.context.window_manager.keyconfigs
+    except Exception:
+        return out
+    if kc is None or kc.user is None or kc.addon is None:
+        return out
+    for km in kc.addon.keymaps:
+        ukm = kc.user.keymaps.get(km.name)
+        if ukm is None:
+            continue
+        for k in km.keymap_items:
+            if not _kmi_registered_by_us(km.name, k):
+                continue
+            if not any(u.active and u.compare(k) for u in ukm.keymap_items):
+                out.append((km.name, k.idname, k.to_string()))
+                break
+    return out
+
+
+def _keymap_stale_entries():
+    """User entries that call a Landfall menu which no longer exists.
+
+    A menu removed in a later version leaves its shortcut in the saved user
+    keymap: Ctrl+Tab in the 3D View keymap still pointed at the mode pie
+    that 3.30 took out. Such an entry does nothing but sits ahead of the
+    real one in the list, so it is removed rather than left to confuse.
+    """
+    out = []
+    try:
+        kc = bpy.context.window_manager.keyconfigs
+    except Exception:
+        return out
+    if kc is None or kc.user is None:
+        return out
+    for km in kc.user.keymaps:
+        for k in km.keymap_items:
+            if k.idname not in ("wm.call_menu_pie", "wm.call_menu"):
+                continue
+            name = str(getattr(k.properties, "name", "") or "")
+            if name.startswith("VIEW3D_MT_landfall") and not hasattr(bpy.types, name):
+                out.append((km, k, name))
     return out
 
 
@@ -3090,14 +3646,37 @@ def _keymap_heal():
         return None
 
     ricostruite = 0
-    for km, native, expected in _keymap_survey():
+    for km, kmi, name in _keymap_stale_entries():
         try:
+            print("[landfall] removed a stale %s entry for '%s' from '%s'"
+                  % (kmi.to_string(), name, km.name))
+            km.keymap_items.remove(kmi)
+        except Exception as err:
+            print("[landfall] could not remove a stale entry: %s" % err)
+
+    to_rebuild = []
+    for name, native, expected in _keymap_survey():
+        to_rebuild.append(name)
+        print("[landfall] the '%s' keymap holds %d of %d stock shortcuts"
+              % (name, native, expected))
+    for name, idname, keys in _keymap_unmirrored():
+        if name not in to_rebuild:
+            to_rebuild.append(name)
+            print("[landfall] the '%s' keymap lost our %s on %s"
+                  % (name, idname, keys))
+    for name in to_rebuild:
+        try:
+            # Fetched afresh for every rebuild: the previous one recreated
+            # every user keymap, and the ones fetched before are gone.
+            kc = bpy.context.window_manager.keyconfigs
+            km = kc.user.keymaps.get(name)
+            if km is None:
+                continue
             km.restore_to_default()
             ricostruite += 1
-            print("[landfall] rebuilt the '%s' keymap: it held %d of %d "
-                  "stock shortcuts" % (km.name, native, expected))
+            print("[landfall] rebuilt the '%s' keymap" % name)
         except Exception as err:
-            print("[landfall] could not rebuild '%s': %s" % (km.name, err))
+            print("[landfall] could not rebuild '%s': %s" % (name, err))
 
     if ricostruite:
         # restore_to_default brings back every stock entry, including the ones
@@ -3112,10 +3691,45 @@ def _keymap_heal():
     return HEAL_WAIT
 
 
+@persistent
 def _keymap_heal_load(*args):
     """Start the rounds again: a new file brings its own configuration."""
     _heal_attempts[0] = 0
     _start_timer(_keymap_heal, 0.4)
+
+
+# The rounds at start-up were not enough: the Mesh keymap emptied itself in
+# the middle of a session, minutes after the last round, and S, A, I and the
+# rest of Edit Mode were gone until the next restart. Every change of mode
+# is now also a check — a count over the keymaps, a millisecond — and a
+# rebuild when it finds the fault, before the next key is pressed.
+_msgbus_owner = object()
+
+
+def _on_mode_change(*args):
+    p = prefs(bpy.context)
+    if p is None or not p.heal_keymaps:
+        return
+    if _keymap_survey() or _keymap_unmirrored():
+        _heal_attempts[0] = HEAL_ROUNDS - 1
+        _start_timer(_keymap_heal, 0.05)
+
+
+def _subscribe_mode_changes():
+    try:
+        bpy.msgbus.clear_by_owner(_msgbus_owner)
+        bpy.msgbus.subscribe_rna(
+            key=(bpy.types.Object, "mode"), owner=_msgbus_owner, args=(),
+            notify=_on_mode_change, options={"PERSISTENT"})
+    except Exception as err:
+        print("[landfall] could not watch mode changes: %s" % err)
+
+
+def _unsubscribe_mode_changes():
+    try:
+        bpy.msgbus.clear_by_owner(_msgbus_owner)
+    except Exception:
+        pass
 
 
 def _maya_nav_enable(context):
@@ -3150,10 +3764,12 @@ def _maya_nav_enable(context):
     _apply_navigation_prefs(context)
 
 
-def _maya_nav_disable():
+def _maya_nav_disable(restore_inputs=True):
     _remove_kmis(_nav_keymaps)
     # Same reason as the marking menu: restore by scanning, not from memory.
     _set_native_loop_select(True)
+    if restore_inputs:
+        _restore_navigation_prefs(bpy.context)
 
 
 def _maya_nav_update(self, context):
@@ -3189,8 +3805,11 @@ class LANDFALL_OT_select_inverse(bpy.types.Operator):
             "POSE": bpy.ops.pose.select_all,
             "EDIT_LATTICE": bpy.ops.lattice.select_all,
             "EDIT_METABALL": bpy.ops.mball.select_all,
+            "EDIT_CURVES": getattr(bpy.ops.curves, "select_all", None),
+            "EDIT_GREASE_PENCIL": getattr(bpy.ops.grease_pencil, "select_all", None),
+            "EDIT_POINTCLOUD": getattr(bpy.ops.pointcloud, "select_all", None),
         }
-        op = ops.get(mode, bpy.ops.object.select_all)
+        op = ops.get(mode) or bpy.ops.object.select_all
         try:
             op(action="INVERT")
         except Exception:
@@ -3211,7 +3830,10 @@ class LANDFALL_OT_select_boundaries(bpy.types.Operator):
 
     def execute(self, context):
         _safe(bpy.ops.mesh.select_all, action="DESELECT")
-        context.tool_settings.mesh_select_mode = (False, True, False)
+        # The operator, not the setting: the setting reaches the active
+        # object only, and with several objects in Edit Mode the others
+        # stayed in face mode, where select_non_manifold refuses to run.
+        _safe(bpy.ops.mesh.select_mode, type="EDGE")
         _safe(bpy.ops.mesh.select_non_manifold, 
             extend=False,
             use_wire=False,
@@ -3281,7 +3903,8 @@ class LANDFALL_OT_detach_separate(bpy.types.Operator):
 class LANDFALL_OT_unwrap_pack(bpy.types.Operator):
     bl_idname = "landfall.unwrap_pack"
     bl_label = "Unwrap + scale + pack"
-    bl_description = "Unwrap, average island scale and pack the islands"
+    bl_description = ("Unwrap the whole mesh, average the island scale and "
+                      "pack the islands")
     bl_options = {"REGISTER", "UNDO"}
 
     margin: bpy.props.FloatProperty(name="Margin", default=0.02, min=0.0, max=0.5)
@@ -3365,6 +3988,7 @@ def _set_wireframes(state):
             pass
 
 
+@persistent
 def _wire_follow_mode(*args):
     """Wire on shaded off in Object Mode, on in component mode.
 
@@ -3409,6 +4033,7 @@ def _wire_follow_mode(*args):
         _wire_state["restore"] = None
 
 
+@persistent
 def _wire_reset(*args):
     """Start clean: no wire on shaded in Object Mode."""
     p = prefs(bpy.context)
@@ -3460,7 +4085,16 @@ def _draw_grid():
     space = getattr(context, "space_data", None)
     if region is None or space is None or space.type != "VIEW_3D":
         return
-    if space.region_3d.view_perspective == "ORTHO":
+    # The region's own view, not the space's: in quad view the three side
+    # quadrants have their own, and reading the space's drew the finite
+    # grid over Blender's orthographic grids.
+    rv3d = getattr(context, "region_data", None) or space.region_3d
+    if rv3d is None:
+        return
+    if rv3d.view_perspective == "ORTHO" and rv3d.is_orthographic_side_view:
+        # Top, Front, Side: Blender draws its own orthographic grid there.
+        # A rotated orthographic view (Numpad 5 from anywhere) uses the
+        # floor, which is off, so ours is drawn.
         return
 
     key = (scene.landfall_grid_size, scene.landfall_grid_cell)
@@ -3728,7 +4362,7 @@ def _xray_alpha_update(self, context):
 
 def _levels_update(self, context):
     """Push the level onto the selected meshes that already have a subdivision."""
-    for o in context.selected_objects:
+    for o in _own(context.selected_objects):
         if o.type != "MESH":
             continue
         for m in o.modifiers:
@@ -3775,7 +4409,7 @@ class LANDFALL_OT_smooth_preview(bpy.types.Operator):
         return _with_shortcut(base, "landfall.smooth_preview", {"mode": properties.mode})
 
     def execute(self, context):
-        objs = [o for o in context.selected_objects if o.type == "MESH"]
+        objs = [o for o in _own(context.selected_objects) if o.type == "MESH"]
         active = context.view_layer.objects.active
         if not objs and active is not None and active.type == "MESH":
             objs = [active]
@@ -3819,7 +4453,20 @@ class LANDFALL_OT_smooth_apply(bpy.types.Operator):
         # scene, so they are reported and the others still get applied.
         n = 0
         saltati = []
-        for o in list(context.selected_objects):
+        # A modifier cannot be applied in Edit Mode, and the button used to
+        # answer "Skipped" and do nothing. Object Mode for the time it
+        # takes, then back: the selection inside the mesh survives the trip.
+        in_edit = context.mode == "EDIT_MESH"
+        targets = list(context.objects_in_mode_unique_data) if in_edit \
+            else list(context.selected_objects)
+        active = context.view_layer.objects.active
+        if in_edit:
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except RuntimeError as err:
+                self.report({"WARNING"}, str(err).replace("Error: ", ""))
+                return {"CANCELLED"}
+        for o in _own(targets):
             if o.type != "MESH":
                 continue
             mod = _subsurf(o, create=False)
@@ -3832,6 +4479,13 @@ class LANDFALL_OT_smooth_apply(bpy.types.Operator):
             except RuntimeError as err:
                 motivo = str(err).replace("Error: ", "").strip()
                 saltati.append("%s (%s)" % (o.name, motivo))
+        if active is not None and active.name in context.view_layer.objects:
+            context.view_layer.objects.active = active
+        if in_edit:
+            try:
+                bpy.ops.object.mode_set(mode="EDIT")
+            except RuntimeError:
+                pass
 
         if saltati:
             self.report({"WARNING"}, "Skipped %d: %s"
@@ -3953,7 +4607,11 @@ def _delete_enable(context):
             _del_keymaps.append((km, kmi))
         except Exception:
             pass
-    _wake_user_kmi("object.delete")
+    # Only our Backspace entries. Without the filter this woke Blender's own
+    # X and Delete too, undoing a user who had switched them off on purpose.
+    _wake_user_kmi("object.delete", key="BACK_SPACE")
+    _wake_user_kmi("wm.call_menu", key="BACK_SPACE", keymap="Mesh")
+    _wake_user_kmi("curve.delete", key="BACK_SPACE")
 
 
 def _delete_disable():
@@ -3970,7 +4628,11 @@ def _marking_enable(context):
     kc = context.window_manager.keyconfigs.addon
     if kc is None:
         return
-    for name in ("Mesh", "Object Mode"):
+    # The paint modes too: the Object ring offers Sculpt and the paint
+    # modes, and without the entry there Ctrl+Tab fell back to Blender's
+    # pie and there was no way back through the menu.
+    for name in ("Mesh", "Object Mode", "Sculpt", "Vertex Paint",
+                 "Weight Paint", "Image Paint"):
         km = kc.keymaps.new(name=name, space_type="EMPTY")
         kmi = km.keymap_items.new("landfall.marking_menu", "TAB", "PRESS",
                                   ctrl=True)
@@ -3997,8 +4659,8 @@ class LANDFALL_Prefs(bpy.types.AddonPreferences):
     maya_selection: bpy.props.BoolProperty(
         name="Also use Maya's green for the 3D selection",
         description=(
-            "Off by default: Blender's orange selection reads well and there is "
-            "no strong reason to change it"
+            "Maya's green instead of Blender's orange for the selected "
+            "objects and components in the viewport"
         ),
         default=True,
     )
@@ -4089,15 +4751,33 @@ class LANDFALL_Prefs(bpy.types.AddonPreferences):
         default=True,
     )
     maya_gizmos: bpy.props.BoolProperty(
-        name="Transform gizmos on in every workspace",
+        name="Same transform gizmos in every workspace",
         description=(
-            "Blender ships with the move, rotate and scale gizmos on in "
-            "Layout and off everywhere else, and each workspace keeps its "
-            "own setting. This turns them on in all of them, the way Maya "
-            "always shows the manipulator"
+            "Blender keeps the move, rotate and scale gizmos per workspace: "
+            "on in Layout, off everywhere else. This applies one choice — "
+            "the three switches in the Gizmos section — to all of them, the "
+            "way Maya shows the same manipulator wherever you are"
         ),
         default=True,
         update=_gizmos_update,
+    )
+    gizmo_flags: bpy.props.BoolVectorProperty(
+        name="Move, Rotate, Scale",
+        description=(
+            "Which transform gizmos every workspace shows. One at a time is "
+            "how Maya works; three at once hide each other's handles"
+        ),
+        size=3,
+        default=(True, False, False),
+        update=_gizmos_update,
+    )
+    colors_wanted: bpy.props.BoolProperty(
+        name="Maya colors wanted",
+        description=("Internal: whether the Maya colors are to be applied "
+                     "when the add-on starts. Turn off and the restore arrow "
+                     "clear it; Maya colors and Turn on set it"),
+        default=True,
+        options={"HIDDEN"},
     )
     maya_navigation: bpy.props.BoolProperty(
         name="Maya navigation",
@@ -4124,7 +4804,13 @@ class LANDFALL_Prefs(bpy.types.AddonPreferences):
 
         box = layout.box()
         box.prop(self, "maya_navigation")
-        box.prop(self, "maya_gizmos")
+        row = box.row(align=True)
+        row.prop(self, "maya_gizmos")
+        sub = row.row(align=True)
+        sub.enabled = self.maya_gizmos
+        sub.prop(self, "gizmo_flags", index=0, text="Move", toggle=True)
+        sub.prop(self, "gizmo_flags", index=1, text="Rotate", toggle=True)
+        sub.prop(self, "gizmo_flags", index=2, text="Scale", toggle=True)
         box.prop(self, "maya_extrude")
         box.prop(self, "heal_keymaps")
         col = box.column(align=True)
@@ -4133,7 +4819,7 @@ class LANDFALL_Prefs(bpy.types.AddonPreferences):
         col.label(text="F frames the selection in Object Mode")
         col.label(text="Loop select moves to double click, edge ring to Ctrl+double click")
         col.label(text="Blender's own middle-mouse navigation keeps working")
-        col.label(text="Turning this off puts everything back")
+        col.label(text="Turning this off puts Blender's own navigation back")
         box.operator("landfall.keymap_report", icon="CONSOLE")
 
         box = layout.box()
@@ -4166,11 +4852,23 @@ def _apply_project(context, root):
         if os.path.isdir(assets):
             libs = context.preferences.filepaths.asset_libraries
             name = os.path.basename(os.path.normpath(root))
-            existing = next((l for l in libs if l.name == name), None)
+            # Matched by folder first: two projects called the same, in
+            # different places, used to share one entry that the second
+            # silently pointed elsewhere.
+            wanted = os.path.normcase(os.path.normpath(assets))
+            existing = next((l for l in libs if os.path.normcase(
+                os.path.normpath(bpy.path.abspath(l.path))) == wanted), None)
+            if existing is None:
+                existing = next((l for l in libs if l.name == name
+                                 and not os.path.isdir(bpy.path.abspath(l.path))),
+                                None)
             if existing is None:
                 bpy.ops.preferences.asset_library_add(directory=assets)
                 if len(libs):
-                    libs[-1].name = name
+                    lib = libs[-1]
+                    used = {l.name for l in libs if l != lib}
+                    lib.name = name if name not in used else name + " (%s)" % (
+                        os.path.basename(os.path.dirname(os.path.normpath(root))))
             else:
                 existing.path = assets
 
@@ -4285,7 +4983,14 @@ class LANDFALL_OT_create_project(bpy.types.Operator):
                 continue
             path = os.path.join(root, *rel.split("/"))
             if not os.path.isdir(path):
-                os.makedirs(path, exist_ok=True)
+                try:
+                    os.makedirs(path, exist_ok=True)
+                except OSError as err:
+                    # A read-only folder or a name the disk refuses: say
+                    # so instead of a traceback, and leave nothing set.
+                    self.report({"WARNING"}, "Cannot create %s: %s"
+                                % (path, err.strerror or err))
+                    return {"CANCELLED"}
                 made += 1
 
         wrote = False
@@ -4335,18 +5040,40 @@ def _scenes_dir(context):
 
 
 class LANDFALL_OT_project_open(bpy.types.Operator):
+    """Open a scene from the project.
+
+    Blender's own Open ignores the folder it is handed and starts in the
+    last folder used, so passing scenes/ to it did nothing. This is a file
+    browser of ours that starts in scenes/ and then hands the chosen file
+    to Blender's Open, which still asks about unsaved changes.
+    """
     bl_idname = "landfall.project_open"
     bl_label = "Open scene"
     bl_description = "Open the file browser inside the project scenes/ folder"
 
-    def execute(self, context):
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})
+    directory: bpy.props.StringProperty(subtype="DIR_PATH", options={"SKIP_SAVE"})
+    filter_glob: bpy.props.StringProperty(default="*.blend", options={"HIDDEN"})
+    filter_blender: bpy.props.BoolProperty(default=True, options={"HIDDEN"})
+
+    def invoke(self, context, event):
         scenes = _scenes_dir(context)
         if not scenes:
-            self.report({"INFO"}, "No project set, opening the usual browser")
-            bpy.ops.wm.open_mainfile("INVOKE_DEFAULT")
-            return {"FINISHED"}
-        bpy.ops.wm.open_mainfile("INVOKE_DEFAULT", filepath=os.path.join(scenes, ""))
-        return {"FINISHED"}
+            self.report({"INFO"}, "No project scenes folder, opening the usual browser")
+            return bpy.ops.wm.open_mainfile("INVOKE_DEFAULT")
+        self.directory = os.path.join(scenes, "")
+        self.filepath = self.directory
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        path = bpy.path.abspath(self.filepath) if self.filepath else ""
+        if not path or os.path.isdir(path) or not os.path.isfile(path):
+            # Called without a file, from a script or the redo panel: the
+            # usual browser is still the right answer.
+            return bpy.ops.wm.open_mainfile("INVOKE_DEFAULT")
+        return bpy.ops.wm.open_mainfile("INVOKE_DEFAULT", filepath=path,
+                                        display_file_selector=False)
 
 
 class LANDFALL_OT_project_save_as(bpy.types.Operator):
@@ -4357,7 +5084,7 @@ class LANDFALL_OT_project_save_as(bpy.types.Operator):
     def execute(self, context):
         scenes = _scenes_dir(context)
         if not scenes:
-            self.report({"INFO"}, "No project set, opening the usual Save As")
+            self.report({"INFO"}, "No project scenes folder, opening the usual Save As")
             bpy.ops.wm.save_as_mainfile("INVOKE_DEFAULT", relative_remap=True)
             return {"FINISHED"}
 
@@ -4477,25 +5204,45 @@ class LANDFALL_OT_quad_view(bpy.types.Operator):
 # ------------------------------------------------------------- PBR set
 
 
-MAP_RULES = [
-    ("base",  ("basecolor", "base_color", "albedo", "diffuse", "_col", "color")),
-    ("rough", ("roughness", "_rough", "_rgh")),
-    ("metal", ("metallic", "metalness", "_metal", "_mtl")),
-    ("normal", ("normalgl", "normal", "_nrm", "_nor")),
-    ("height", ("displacement", "height", "_disp", "_hgt")),
-    ("emit",  ("emissive", "emission", "_emit")),
-    ("alpha", ("opacity", "_alpha")),
-]
+# Words that name a map, whole: the part of the file name after the last
+# separator, once the extension is gone. Matching them anywhere in the name
+# went wrong on ordinary sets: "Rusty_Metal_Height" contained "_metal" and
+# was taken for the metallic map, and the real one was then skipped.
+MAP_WORDS = {
+    "base": ("basecolor", "base_color", "base-color", "basecolour", "albedo",
+             "diffuse", "diff", "col", "color", "colour", "alb", "bc"),
+    "rough": ("roughness", "rough", "rgh", "r"),
+    "metal": ("metallic", "metalness", "metal", "mtl", "met", "m"),
+    "normal": ("normalgl", "normaldx", "normal", "nrm", "nor", "norm", "n"),
+    "height": ("displacement", "displace", "height", "disp", "hgt", "h",
+               "bump"),
+    "emit": ("emissive", "emission", "emit", "emis", "e"),
+    "alpha": ("opacity", "alpha", "transparency", "mask", "op"),
+}
+MAP_RULES = [(kind, MAP_WORDS[kind]) for kind in
+             ("base", "rough", "metal", "normal", "height", "emit", "alpha")]
 
 
 def classify(filename):
-    low = filename.lower()
-    if any(k in low for k in ("normalgl", "normal", "_nrm", "_nor")):
-        return "normal"
-    for kind, keys in MAP_RULES:
-        if kind == "normal":
-            continue
-        if any(k in low for k in keys):
+    stem = os.path.splitext(os.path.basename(filename))[0].lower()
+    # "Wood_BaseColor_2k" -> the last words, resolution suffixes dropped.
+    parts = [w for w in stem.replace("-", "_").replace(" ", "_").replace(".", "_").split("_") if w]
+    while parts and (parts[-1].endswith("k") and parts[-1][:-1].isdigit()
+                     or parts[-1].isdigit() or parts[-1] in ("gl", "dx", "png", "jpg")):
+        parts.pop()
+    if not parts:
+        return None
+    for word in (parts[-1], parts[-1] + ("_" + parts[-2] if len(parts) > 1 else "")):
+        for kind, keys in MAP_RULES:
+            if word in keys:
+                return kind
+    # "BaseColor" glued to the name: look inside the last word, longest
+    # keys first, so "metallic" wins over "metal" and "normalgl" over "nor".
+    last = parts[-1]
+    keys = sorted(((k, kind) for kind, ks in MAP_RULES for k in ks if len(k) > 2),
+                  key=lambda kv: -len(kv[0]))
+    for k, kind in keys:
+        if last.endswith(k):
             return kind
     return None
 
@@ -4544,7 +5291,13 @@ class LANDFALL_OT_load_pbr_set(bpy.types.Operator):
         if mat is None:
             mat = bpy.data.materials.new(name=obj.name + "_mat")
             mat.use_nodes = True
-            obj.data.materials.append(mat)
+            slots = obj.material_slots
+            if slots and slots[obj.active_material_index].material is None:
+                # An empty active slot takes the material; appending a
+                # new slot put it where no face was assigned.
+                slots[obj.active_material_index].material = mat
+            else:
+                obj.data.materials.append(mat)
         if not mat.use_nodes:
             mat.use_nodes = True
 
@@ -4586,7 +5339,12 @@ class LANDFALL_OT_load_pbr_set(bpy.types.Operator):
             if not path:
                 continue
 
-            img = bpy.data.images.load(path, check_existing=True)
+            try:
+                img = bpy.data.images.load(path, check_existing=True)
+            except RuntimeError as err:
+                self.report({"WARNING"}, "Could not load %s: %s"
+                            % (os.path.basename(path), str(err).strip()))
+                continue
             if kind in data_maps:
                 try:
                     img.colorspace_settings.name = "Non-Color"
@@ -4619,8 +5377,10 @@ class LANDFALL_OT_load_pbr_set(bpy.types.Operator):
                     nt.links.new(tex.outputs["Color"], bsdf.inputs[socket])
                     if kind == "emit" and "Emission Strength" in bsdf.inputs:
                         bsdf.inputs["Emission Strength"].default_value = 1.0
-                    if kind == "alpha":
-                        nt.links.new(tex.outputs["Alpha"], bsdf.inputs["Alpha"])
+                    # The opacity map goes in through Color: a second link
+                    # from the image's Alpha output replaced it, and a
+                    # greyscale opacity map has an alpha of one everywhere,
+                    # so the object stayed opaque.
 
         self.report({"INFO"}, "Connected %d maps: %s" % (len(found), ", ".join(sorted(found))))
         return {"FINISHED"}
@@ -4826,14 +5586,13 @@ def draw_setup(layout, context):
                  icon="FILE_TICK")
     box.operator("landfall.self_check", text="Self check", icon="CHECKMARK")
 
-    # L'avviso sta qui e non solo nella documentazione: nessuno legge un PDF
-    # prima di disinstallare. Turn off riaccende la griglia nativa e rimette
-    # il tema; disinstallare senza premerlo lascia il viewport senza griglia
-    # e i colori di Maya, e a quel punto l'addon non c'e' piu' per rimediare.
+    # Since 3.41.3 disabling or uninstalling puts Blender back by itself,
+    # so the old warning to press Turn off first is gone. Turn off is for
+    # working the Blender way with the add-on still installed.
     nota = box.column(align=True)
     nota.scale_y = 0.8
-    nota.label(text="Press Turn off before uninstalling:", icon="INFO")
-    nota.label(text="it puts the grid and the theme back.")
+    nota.label(text="Turn off: Blender's own set-up, add-on kept.", icon="INFO")
+    nota.label(text="Uninstalling puts Blender back by itself.")
 
     layout.separator()
     draw_nav_toggle(layout, context)
@@ -5071,7 +5830,9 @@ CLASSES = (
     LANDFALL_OT_self_check,
     LANDFALL_OT_frame_selected,
     LANDFALL_OT_extrude_options,
+    LANDFALL_OT_extrude_spread,
     LANDFALL_OT_extrude_move,
+    LANDFALL_OT_extrude,
     LANDFALL_OT_toggle_scene_flag,
     LANDFALL_OT_marking_menu,
     LANDFALL_OT_select_mode_multi,
@@ -5109,10 +5870,6 @@ _keymaps = []
 
 # Where the general shortcuts go: the viewport keymap and every mode keymap
 # that would otherwise catch the key first.
-KEYMAP_TARGETS = (("3D View", "VIEW_3D"),) + tuple(
-    (name, "EMPTY") for name in (
-        "Object Mode", "Mesh", "Sculpt", "Vertex Paint", "Weight Paint",
-        "Image Paint", "Pose"))
 
 
 def _register_properties():
@@ -5281,6 +6038,7 @@ def _draw_handlers(on):
                 fn, (), "WINDOW", "POST_VIEW")
 
 
+@persistent
 def _close_floating(*args):
     """The modal operators behind the sheet and the marking menu die with
     the file they were started in; their draw handlers did not, and a new
@@ -5314,7 +6072,52 @@ def _deferred_sync():
     # A timer defers them to the first moment the real context exists.
     _wire_reset()
     _grid_sync()
+    _colors_sync()
     return None
+
+
+def _colors_sync():
+    """Landfall on means Maya's colors on, unless Turn off or the restore
+    arrow said otherwise. Disabling the add-on puts Blender's theme back
+    (see _leave_blender_stock), so enabling it again must bring the
+    colors back on its own, or every update would end in a stock viewport."""
+    p = prefs(bpy.context)
+    if p is None or not p.colors_wanted:
+        return
+    try:
+        theme = bpy.context.preferences.themes[0]
+        if _theme_is_maya(theme.view_3d):
+            return
+        _theme_apply(bpy.context, theme, p)
+    except Exception as err:
+        print("[landfall] could not apply the Maya colors: %s" % err)
+
+
+def _leave_blender_stock():
+    """Everything Landfall changed outside its own keymaps goes back to
+    Blender's factory state when the add-on is disabled or uninstalled:
+    the theme, the floor grid and axes, the four navigation preferences,
+    the object-color shading. Landfall on is Maya; Landfall off is Blender.
+    The wish for Maya colors is kept, so enabling it again restores them.
+    """
+    p = prefs(bpy.context)
+    wanted = bool(p.colors_wanted) if p is not None else False
+    try:
+        theme = bpy.context.preferences.themes[0]
+        if _theme_is_maya(theme.view_3d):
+            _theme_restore(bpy.context, theme, p)
+    except Exception as err:
+        print("[landfall] could not put the theme back: %s" % err)
+    if p is not None:
+        p.colors_wanted = wanted
+    _set_native_grid(True)
+    _restore_navigation_prefs(bpy.context)
+    for space in _all_view3d_spaces():
+        try:
+            if space.shading.color_type == "OBJECT":
+                space.shading.color_type = "MATERIAL"
+        except Exception:
+            pass
 
 
 def _register_handlers():
@@ -5327,6 +6130,7 @@ def _register_handlers():
     _start_timer(_gizmos_sync, 0.2)
     _start_timer(_keymap_heal, 0.4)
     _start_timer(_deferred_sync, 0.1)
+    _subscribe_mode_changes()
 
 
 def _register_keymaps(wm):
@@ -5428,6 +6232,7 @@ def register():
 
 
 def unregister():
+    _leave_blender_stock()
     _extrude_disable()
     _delete_disable()
     _marking_disable()
@@ -5450,6 +6255,7 @@ def unregister():
             lista.remove(fn)
     for fn in TIMERS + (_deferred_sync,):
         _stop_timer(fn)
+    _unsubscribe_mode_changes()
 
     _remove_kmis(_keymaps)
 

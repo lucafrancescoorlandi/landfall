@@ -1,4 +1,4 @@
-# Landfall 3.41.2
+# Landfall 3.41.3
 
 <img src="https://raw.githubusercontent.com/lucafrancescoorlandi/landfall/main/docs/landfall-icon.png" width="96" align="right" alt="">
 
@@ -92,15 +92,16 @@ accounts for Store, portable and Steam installs, whose paths differ.
 
 ### Uninstalling
 
-**Press Turn off in the Setup section first.** Two of the things Landfall
-changes cannot put themselves back once it is gone. The finite grid works by
-switching off Blender's own floor and axis lines and drawing its own in their
-place, so uninstalling leaves a viewport with no grid at all and nothing to
-restore it — and that state lives in the .blend file, so restarting does not
-help. The Maya colors are a theme, and a theme stays where it is.
+Nothing to do first. Landfall on is Maya; Landfall off is Blender: when the
+add-on is disabled or uninstalled it puts back, by itself, everything it
+changed outside its own shortcuts — the theme, the floor grid and axis
+lines, the four navigation preferences, the object-color shading. Enable it
+again and the Maya set-up comes back on its own, colors included, unless
+you had pressed **Turn off** or the restore arrow next to Maya colors.
 
-Turn off restores both. If you have already uninstalled: re-enable Floor,
-X Axis and Y Axis in the viewport's Overlays menu, and use
+Up to 3.41.2 this was not so: the finite grid and the Maya colors stayed
+behind after an uninstall. If that is where you are, re-enable Floor, X Axis
+and Y Axis in the viewport's Overlays menu, and use
 `Preferences → Themes → Reset to Default Theme` for the colors.
 
 Landfall is an extension, and for extensions the **Uninstall** command lives in
@@ -160,6 +161,7 @@ add-on preferences.
 | `Shift+Q` | Pie menu with the eight most-used commands |
 | `Alt+Q` | Hotbox with every command, in columns |
 | `Alt+W` | Show or hide the transform gizmos |
+| `E` | Extrude, in Edit Mode: faces with Maya's options, edges and vertices as in Blender |
 | `Backspace` | Deletes, if turned on in the preferences |
 | `Ctrl+Tab` | Marking menu |
 | `Shift+Alt+Q` | Modeling pie, in Edit Mode |
@@ -268,9 +270,14 @@ without reaching for the panel.
 Blender ships with the move, rotate and scale gizmos on in the Layout
 workspace and off in every other one, and each workspace keeps its own
 setting — so they vanish the moment you switch to Modeling. The preference
-**Transform gizmos on in every workspace** turns them on in all of them, the
-way Maya always shows the manipulator, and reapplies it whenever you open a
-file, since each file carries its own workspaces.
+**Same transform gizmos in every workspace** applies one choice to all of
+them, the way Maya shows the same manipulator wherever you are, and applies
+it again whenever you open a file, since each file carries its own
+workspaces. The choice is the three switches next to the preference, and
+the same three in the Gizmos section of the panel: Move alone to begin
+with, because that is the manipulator Maya shows most, and three at once
+hide each other's handles. `Alt+W` hides and shows those three; the
+navigation gizmo in the corner is left alone.
 
 **Finite grid**, in Setup, replaces Blender's infinite floor with a bounded one
 like Maya's, 22 cells by default. Blender's own `grid_lines` setting has no
@@ -398,7 +405,14 @@ after the first session the panel shows only what you actually use.
 **Self check**, under the Maya setup buttons, verifies that every command in
 the menus points at an operator that exists, that both rings have eight
 entries, that every branch names a real list, that no row of a list can fall
-outside its panel, and that no keymap has lost its shortcuts. The result goes
+outside its panel, that no keymap has lost its shortcuts and that every
+shortcut of Landfall's has its working copy in the user keymap. It also lists,
+as a NOTE, every Landfall shortcut that hides one of Blender's own — looking
+through every keymap Blender consults for that key, not only the one with
+the same name. On a stock Blender 5.2 there are two: `Alt+Q` hides *Transfer
+Mode* and `Alt+W` hides the tool pie. Both are rarely used and both stay
+reachable from the menus and `F3`; if you use one a lot, move the hotbox or
+the gizmo toggle to another key in `Preferences → Keymap`. The result goes
 to a text block called `landfall_self_check`.
 
 It cannot check the drawing or the mouse. Those are the one part with no
@@ -414,16 +428,24 @@ stopped entering Edit Mode, and the Mesh keymap held two entries out of a
 hundred and eight, taking `I`, `K`, `P` and `A` with it.
 
 Landfall rebuilds any keymap that has lost more than half of Blender's own
-shortcuts, and prints what it rebuilt to the console. It looks several times
-over the first few seconds rather than once: a single check right after
-registering found nothing wrong, because Blender had not finished building the
-user configuration yet, and the truncation appeared afterwards. It looks again
-whenever a file is opened, too.
+shortcuts, or that has lost the working copy of one of Landfall's, and prints
+what it rebuilt to the console. It looks several times over the first few
+seconds rather than once: a single check right after registering found
+nothing wrong, because Blender had not finished building the user
+configuration yet, and the truncation appeared afterwards. It looks again
+whenever a file is opened, and at every change of mode: the Mesh keymap once
+emptied itself minutes into a session, long after the start-up rounds, and
+took `S`, `A`, `I` and the rest of Edit Mode with it until the next restart.
+A change of mode is a count over the keymaps, a millisecond, and the rebuild
+happens before the next key is pressed. Entries left behind by an earlier
+version — a shortcut still calling a menu that no longer exists — are
+removed at the same time.
 The threshold is deliberately severe, because no deliberate customisation
 looks like that. If you keep a stripped-down keymap on purpose, turn off
 **Rebuild truncated keymaps at startup**.
 
-If a shortcut ever stops responding: restart Blender, then press Self check.
+If a shortcut ever stops responding: change mode, or restart Blender, then
+press Self check.
 
 ### Maya setup
 
@@ -469,14 +491,17 @@ file.
   solid. Unlike Blender's `Alt+Z`, this is per object. Solid shading only; it
   does not make hidden geometry selectable.
 - **Wire** — toggles the wireframe overlay on top of solid shading.
-- **Hide** — hides the selection and remembers what it hid.
+- **Hide** — hides the selection and remembers what it hid. In Edit Mode it
+  hides the selected faces, edges or vertices, like `H`.
 - **Show sel** — unhides the objects that are currently selected. Hidden
   objects can only be selected in the Outliner, so select them there first.
 - **Show last** — unhides and reselects only the group hidden most recently.
   It remembers one group at a time.
-- **Show all** — unhides everything.
+- **Show all** — unhides everything. In Edit Mode, every hidden part of the
+  mesh; so do Show sel and Show last there.
 - **Isolate** — Blender's Local View. Shows only the selection; press again to
-  return.
+  return. In Edit Mode it hides everything but the selected parts of the
+  mesh, and the second press brings them back.
 - **Border edges** — a real overlay, like Maya's *Toggle Border Edges*. Open
   border edges are drawn as thick colored lines on top of the mesh, and stay
   visible in Object Mode as well as Edit Mode. Width, color and whether it
@@ -519,6 +544,23 @@ confuse and do different things.
 - **Spin** — rotates the selected edge.
 - **Detach** — separates the selected faces into a new object.
 - **Grid fill** — fills a closed edge loop with quads.
+- **Extrude with options** — Maya's *polyExtrudeFace*: thickness, offset,
+  divisions, keep faces together, twist and taper, all adjustable afterwards
+  in the panel at the bottom left or with `F9`.
+
+#### Extrude on `E`
+
+With **Maya extrude on E** (on by default) the key does what it does in
+Maya. With faces selected: press `E`, move the mouse to set the distance,
+click or press Enter. The panel then shows the six parameters above plus
+the move, and stays editable until the next operation. Divisions, twist and
+taper are spread over the distance the mouse set, so three divisions are
+three even segments whether the distance came from the mouse or from
+Thickness. With edges or vertices selected, and nothing else, `E` hands over
+to Blender's own extrude, which knows how to move those: a lone edge along
+its normal, the rest free. With several objects in Edit Mode, every one of
+them is extruded. Turning the preference off gives `E` back to Blender
+entirely.
 
 #### Smooth preview
 
@@ -530,7 +572,9 @@ modifier stack and can be applied or removed at any time.
   its level intact.
 - **2** — smooth surface with the control cage drawn on top.
 - **3** — smooth surface only.
-- **Apply smooth** — applies the subdivision permanently.
+- **Apply smooth** — applies the subdivision permanently. In Edit Mode it
+  steps out to Object Mode for the time it takes and comes back, with the
+  selection intact.
 
 **2** also draws the original cage around the smooth surface, the way Maya
 does. Blender's own wireframe follows the subdivided mesh, so the lines sit on
@@ -602,7 +646,10 @@ Modelled on Maya's *Set Project*.
 - **Create** — pick a location, give a project name, and Landfall builds the
   folder tree and sets it as current.
 - **Set** — point at an existing project folder and make it current.
-- **Open scene** — opens the file browser inside the project's `scenes/`.
+- **Open scene** — opens the file browser inside the project's `scenes/`. It
+  is a browser of Landfall's own, because Blender's Open ignores the folder it
+  is handed and starts where it last was; the chosen file then goes through
+  Blender's Open, which still asks about unsaved changes.
 - **Save as** — saves into `scenes/` and remaps paths to relative. If the file
   already lives inside the project, it stays where it is instead of being
   pulled back into `scenes/`.
@@ -689,8 +736,8 @@ Blender's file loader. When links do break, use
 
 ## Maya navigation
 
-Off by default. The toggle sits at the top of the Landfall panel, above
-Display, and also in `Preferences → Add-ons → Landfall`.
+On by default. The toggle sits in the Setup section of the Landfall panel and
+in `Preferences → Add-ons → Landfall`.
 
 | Input | Action |
 |---|---|
@@ -714,6 +761,11 @@ them:
 | Navigation | Auto Depth | on |
 | Navigation | Zoom to Mouse Position | on |
 | Input | Emulate 3 Button Mouse | off |
+
+Switching Maya navigation off — or disabling or uninstalling the add-on —
+puts all four back to Blender's factory values (the first three off,
+emulation off). Up to 3.41.2 they were not put back at all: a trackpad user
+who had Emulate 3 Button Mouse on lost it for good.
 
 **What it deliberately leaves alone.**
 

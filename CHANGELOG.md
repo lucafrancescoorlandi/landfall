@@ -6,6 +6,143 @@ the change.
 
 ---
 
+## 3.41.3
+
+Found by a third review, harsher than the first two: the whole file read
+line by line by four independent reviewers, every finding checked in the
+source and then reproduced in Blender 5.2.1 on macOS. Two of the faults were
+invisible to every earlier test, because every earlier test ran on a
+Blender that had just been opened.
+
+**Half of Landfall stopped after the first file was opened.** Blender clears
+every add-on handler that is not marked persistent when it loads a file —
+Open, Ctrl+N, Revert — and none of Landfall's eight were marked. Measured:
+six load handlers, two depsgraph handlers, one undo and one redo handler
+before Ctrl+N; zero after. From then until the next restart the border
+edges and the cage did not follow edits, the wire no longer followed the
+mode, the keymap repair and the gizmo sync did not run on the next file, and
+a marking menu or shortcut card left open was never closed. One decorator on
+eight functions; verified: the same ten handlers are still there after
+Ctrl+N.
+
+**The keymap repair could crash Blender.** It kept the keymaps it had found
+and rebuilt them one after the other; but rebuilding one makes Blender
+recreate every user keymap, so the second rebuild used a keymap that no
+longer existed. Harmless with one keymap to rebuild, which is all that was
+ever seen; undefined with two. It now keeps names and fetches each keymap
+afresh before rebuilding it.
+
+**The keymap repair now runs at every change of mode**, not only in the
+first nine seconds and after a file load. The Mesh keymap emptied itself
+minutes into a session — 11 entries out of 129, S and A and I gone — and
+nothing looked at it again until the next restart. A change of mode is a
+count over the keymaps, a millisecond, and the rebuild comes before the
+next key is pressed; verified by stripping the Mesh keymap to 25 entries
+and pressing Tab: 145 within a second. The repair also checks that every
+Landfall shortcut has its active copy in the user keymap — the Alt+mouse
+navigation was missing from the 3D View keymap, registered and listed and
+doing nothing — and removes entries left by earlier versions that still
+call a menu which no longer exists.
+
+**E only extruded faces.** With edges or vertices selected and no face, the
+E of *Maya extrude on E* refused with "Select at least one face", so the
+border of a hole could not be extruded at all. E now dispatches: faces go
+through Landfall's extrusion, edges and vertices through Blender's own,
+which knows how to move them.
+
+**E with several objects in Edit Mode.** Only the active object was
+extruded; the move that followed then pushed the selected faces of the
+others out of their bodies, without walls. Every object in Edit Mode is
+extruded now.
+
+**Divisions, twist and taper did nothing useful with the mouse.** The
+extrusion ran before the move, so with the distance still zero every
+intermediate ring was built on the base — Divisions 3 gave three loops
+stacked on the base and one wall to the top — and twist and taper turned
+rings of zero height. A third step now runs after the move and places each
+ring at its share of the distance the mouse set, then twists and tapers it
+by its share; the same when the distance comes from Thickness. Measured:
+Divisions 3 over a move of 1.5 gives rings at 1.5, 2.0 and 2.5; taper 0.5
+halves the far end.
+
+**Hide in Edit Mode hid the whole object**, leaving you in Edit Mode on
+something invisible, and Show all did not bring hidden faces back. Hide,
+Show sel, Show last and Show all act on the mesh in Edit Mode; Isolate
+hides everything but the selection there, and again to return.
+
+**Apply smooth did nothing in Edit Mode.** Blender refuses to apply a
+modifier there; the button now steps out to Object Mode for the time it
+takes and comes back, selection intact.
+
+**Landfall off is Blender.** Disabling or uninstalling the add-on now puts
+back everything it changed outside its own shortcuts: the theme, the floor
+grid and axis lines, the four navigation preferences (Orbit Around
+Selection, Auto Depth, Zoom to Mouse Position, Emulate 3 Button Mouse —
+all to Blender's factory values), the object-color shading. None of it was
+put back before: a trackpad user lost three-button emulation for good, the
+label under the switch promised the opposite, and an uninstall left a
+viewport with no grid and Maya's colors, which the installation guide had
+to warn about. Enabling the add-on again brings the Maya set-up back on its
+own, colors included, unless Turn off or the restore arrow had been
+pressed. Verified: disable, background 0.239 and floor on and navigation
+off; enable, background 0.361 and finite grid and navigation on.
+
+**Gizmos.** The preference forced all three transform gizmos on in every
+workspace, six times over nine seconds after every file load, and forced
+the master switch with them; Alt+W then flipped that master switch, which
+took the navigation gizmo away too. The preference now applies one choice —
+the three switches beside it, Move alone to begin with — to every
+workspace; Alt+W shows or hides those three and ends the start-up rounds,
+so it is not undone a second later.
+
+**Open scene did not open in scenes/.** Blender's Open discards the folder it
+is handed and starts where it was last. Landfall's Open is now a file
+browser of its own that starts in scenes/ and hands the chosen file to
+Blender's Open. Verified: the browser opens in scenes/ with the .blend
+filter.
+
+**Load PBR set.** The opacity map was linked twice and the second link,
+from the image's alpha channel, replaced the first; a greyscale opacity map
+has an alpha of one everywhere, so the object stayed opaque. The map
+names were matched anywhere in the file name, so "Rusty_Metal_Height"
+became the metallic map and the real one was skipped; only the last word of
+the name is matched now. An empty active material slot takes the new
+material instead of a new slot being appended where no face was assigned.
+An image that fails to load is reported and skipped instead of aborting
+halfway.
+
+**Backspace also deletes re-enabled X and Delete** in Object Mode even
+when they had been switched off on purpose; only the Backspace entries are
+woken now.
+
+**Marking menu and shortcut card in a second Blender window.** Commands
+picked in the menu never ran there ("Area not found in screen"), and
+closing the window left the menu painted in every other viewport with no
+way to close it. Both remember their window and their region, draw only
+in the viewport they were opened in, and close themselves when Blender
+drops them. Ctrl+Tab also opens the marking menu in Sculpt and the paint
+modes, which the Object ring offers but the shortcut did not cover.
+
+**Smaller.** Isolate and the shortcut card acted on the first viewport of
+the screen, not the one the button was in. The finite grid did not draw in
+a rotated orthographic view (Numpad 5), where Blender's floor is off too,
+so there was no grid at all; and in quad view it drew over the three
+orthographic quadrants. The last position of a quick drag in Edit Mode
+could leave the border edges behind until the next edit. Linked objects
+raised on X-ray, Object color and the smooth levels; they are skipped.
+Create project reports a folder it cannot create instead of raising. A
+project's asset library is matched by folder, so two projects with the same
+name no longer share one entry. Select border edges with several objects
+in Edit Mode selected nothing on the others. Select inverse covers curves,
+Grease Pencil and point clouds in their edit modes. Every stroke of an edit
+no longer walks the whole scene for the overlays: only Object Mode geometry
+updates, where a modifier can appear, make the scan stale. The self check
+looks through every keymap Blender consults for a key, so Alt+Q over
+Transfer Mode and Alt+W over the tool pie are listed as NOTEs; those two
+are kept, and documented.
+
+---
+
 ## 3.41.2
 
 **E extruded at distance zero.** The move chained to the extrusion was
