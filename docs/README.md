@@ -1,4 +1,4 @@
-# Landfall 3.41.3
+# Landfall 3.42.0
 
 <img src="https://raw.githubusercontent.com/lucafrancescoorlandi/landfall/main/docs/landfall-icon.png" width="96" align="right" alt="">
 
@@ -158,6 +158,7 @@ add-on preferences.
 | `Shift+Q` | Pie menu with the eight most-used commands |
 | `Alt+Q` | Hotbox with every command, in columns |
 | `Alt+W` | Show or hide the transform gizmos |
+| `G` `R` `S` | Show the matching gizmo alone, as Maya's `W` `E` `R`; with *Gizmo only* off, Blender's modal move, rotate and scale as well |
 | `E` | Extrude, in Edit Mode: faces with Maya's options, edges and vertices as in Blender |
 | `Backspace` | Deletes, if turned on in the preferences |
 | `Ctrl+Tab` | Marking menu |
@@ -275,6 +276,27 @@ the same three in the Gizmos section of the panel: Move alone to begin
 with, because that is the manipulator Maya shows most, and three at once
 hide each other's handles. `Alt+W` hides and shows those three; the
 navigation gizmo in the corner is left alone.
+
+**G, R and S pick the gizmo.** In Maya the manipulator you see is the one
+of the tool you last chose with `W`, `E` or `R`; in Blender the modal
+transform and the gizmo are two unrelated things. With this preference,
+on by default, `G`, `R` and `S` show the matching gizmo alone, in every
+workspace, with the panel's three switches following. Three gizmos
+switched on from the panel stay until the next `G`, `R` or `S`. It works
+in Object Mode, the edit modes and Pose Mode; Sculpt and the paint modes
+are left alone, because there the same letters are brushes.
+
+The button under the gizmos in the panel, **G R S: gizmo only, like
+Maya**, chooses between two ways of working, and it is on to begin with.
+Lit, the key does nothing but show the gizmo, and you transform by
+dragging its handles, which stay on screen while you do — Maya's model.
+Unlit, the key also starts Blender's own move, rotate or scale, with
+every axis key, the second `G` for the slide and the numeric input
+untouched, and the gizmo appears when the transform ends: Blender hides
+every gizmo for the length of a modal transform, with or without
+Landfall, which is the reason for the button. `R` then `Esc` is then the
+way to change the gizmo without transforming. The same switch is in the
+add-on preferences.
 
 **Finite grid**, in Setup, replaces Blender's infinite floor with a bounded one
 like Maya's, 22 cells by default. Blender's own `grid_lines` setting has no
@@ -791,9 +813,9 @@ you away instead of pulling you in, tick that box in
 `Alt` + click is loop select in stock Blender, so it is muted and loop select
 moves to a double click. Turning the option off restores it.
 
-`F` creates a face in Edit Mode, which is essential, so framing is bound to `F`
-in the Object Mode keymap only. In Edit Mode use `Numpad .` to frame, or
-the marking menu.
+`F` creates a face in Edit Mode. Framing takes `F` there as well, as in Maya,
+and Make Edge/Face moves to `Shift+F` — see the table above. `Numpad .` frames
+in every mode and is left untouched.
 
 `A` is Select All in Blender, not frame-all as in Maya. It is left alone. Use
 `Home` to frame the whole scene.
@@ -856,11 +878,13 @@ native format.
 - The wireframe overlay follows the mode: off in Object Mode, on in component
   mode, and whatever you set by hand is restored on the way out. Switch it off
   in the preferences if you prefer to drive it yourself.
-- Transform shortcuts are left alone on purpose. `G` move, `R` rotate and `S`
-  scale are modal in Blender: press the key, move the mouse, type an axis and a
-  number, press Enter. That is fewer mouse movements than dragging a gizmo, and
-  remapping them to `W E R` means never learning it. The panel shows a reminder
-  at the top; turn it off in the add-on preferences once you no longer need it.
+- Transform shortcuts keep Blender's letters on purpose. `G` move, `R` rotate
+  and `S` scale are modal in Blender: press the key, move the mouse, type an
+  axis and a number, press Enter. That is fewer mouse movements than dragging
+  a gizmo, and remapping them to `W E R` means never learning it. What the
+  keys do add, since 3.42.0, is the matching gizmo. The panel shows a
+  reminder at the top; turn it off in the add-on preferences once you no
+  longer need it.
 
 ---
 
