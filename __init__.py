@@ -30,7 +30,7 @@ from gpu_extras.batch import batch_for_shader
 bl_info = {
     "name": "Landfall",
     "author": "Luca Orlandi",
-    "version": (3, 41, 3),
+    "version": (3, 42, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Landfall | Properties > Scene | Shift+Q | Alt+Q",
     "description": "Maya-style shelf for Blender",
@@ -80,6 +80,13 @@ def draw_gizmos(layout, context):
             sub.prop(space, "show_gizmo_object_scale", text="Scale", toggle=True)
     else:
         row.operator("landfall.toggle_gizmos", text="Gizmos", icon="GIZMO")
+    if p is not None and p.keys_pick_gizmo:
+        # The two ways G, R and S can work, one button: lit, the keys only
+        # choose the gizmo and the handles do the work, as Maya's W, E and
+        # R; unlit, they also start Blender's modal transform.
+        row = box.row(align=True)
+        row.prop(p, "gizmo_keys_only", text="G R S: gizmo only, like Maya",
+                 toggle=True, icon="TOOL_SETTINGS")
 
     col = box.column(align=True)
     row = col.row(align=True)
@@ -988,7 +995,7 @@ SHEET_PANEL = (
 )
 
 SHEET_BLENDER = (
-    ("Move / rotate / scale", "G  R  S"),
+    ("Move / rotate / scale, gizmo follows", "G  R  S"),
     ("Constrain to axis", "X  Y  Z"),
     ("Numeric input", "type a number"),
     ("Frame all", "Home"),
@@ -3151,6 +3158,124 @@ def _extrude_update(self, context):
         _extrude_enable(context)
 
 
+# The keymaps where G, R and S are Blender's plain transforms. Not Sculpt
+# or the paint modes: there the same letters are brushes and the object
+# gizmos have no place.
+GIZMO_KEY_KEYMAPS = ("Object Mode", "Mesh", "Curve", "Armature", "Lattice",
+                     "Metaball", "Pose")
+GIZMO_KEY_MODES = (("TRANSLATE", "G", 0), ("ROTATE", "R", 1), ("RESIZE", "S", 2))
+_gizmo_keymaps = []
+
+
+def _pick_gizmo(context, index):
+    """Show the one transform gizmo that goes with the key just pressed.
+
+    Maya shows the manipulator of the tool you chose with W, E or R, and
+    that is the gizmo a hand from Maya expects to see after the key. With
+    the workspace preference on the choice is written to the three flags,
+    which the panel and every workspace read; otherwise it goes to the
+    viewports of this screen alone.
+    """
+    wanted = tuple(i == index for i in range(3))
+    p = prefs(context)
+    if p is not None and p.maya_gizmos:
+        if tuple(p.gizmo_flags) != wanted:
+            p.gizmo_flags = wanted        # the update applies it everywhere
+        else:
+            _gizmos_apply(wanted)         # a viewport switched off by hand
+        # The start-up rounds must not undo it a second later.
+        _gizmos_attempts[0] = GIZMO_ROUNDS
+        targets = _all_workspace_view3d()
+    else:
+        targets = _view3d_spaces(context)
+        for space in targets:
+            try:
+                for flag, value in zip(GIZMO_FLAGS, wanted):
+                    setattr(space, flag, value)
+            except Exception:
+                continue
+    for space in targets:
+        try:
+            space.show_gizmo = True
+        except Exception:
+            continue
+    _redraw_view3d(context)
+
+
+class LANDFALL_OT_transform_key(bpy.types.Operator):
+    """G, R and S with the matching gizmo shown.
+
+    Two ways, chosen with the button under the gizmos in the panel. Gizmo
+    only: the key shows the one gizmo and nothing else, and the handles do
+    the transforming, as Maya's W, E and R. Otherwise the transform is
+    Blender's own — the modal move, rotate or scale, with every axis key,
+    the second G for the slide and the numeric input untouched — so the
+    adjust panel is Blender's too; R then Esc is then the way to change the
+    gizmo without transforming.
+    """
+    bl_idname = "landfall.transform_key"
+    bl_label = "Transform and pick the gizmo"
+    bl_description = ("Blender's move, rotate or scale, showing the matching "
+                      "gizmo, as Maya's W, E and R do")
+    bl_options = {"INTERNAL"}
+
+    mode: bpy.props.EnumProperty(
+        items=[(m, m.title(), "") for m, _k, _i in GIZMO_KEY_MODES],
+        default="TRANSLATE", options={"SKIP_SAVE", "HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        return context.area is not None and context.area.type == "VIEW_3D"
+
+    def invoke(self, context, event):
+        index = {m: i for m, _k, i in GIZMO_KEY_MODES}[self.mode]
+        try:
+            _pick_gizmo(context, index)
+        except Exception as err:
+            print("[landfall] could not pick the gizmo: %s" % err)
+        p = prefs(context)
+        if p is not None and p.gizmo_keys_only:
+            # Maya's model: the key chooses the tool, the gizmo's handles do
+            # the transforming and stay on screen while they do. Blender
+            # hides every gizmo for the length of a modal transform, which
+            # is why the other model shows none until the transform ends.
+            return {"FINISHED"}
+        op = {"TRANSLATE": bpy.ops.transform.translate,
+              "ROTATE": bpy.ops.transform.rotate,
+              "RESIZE": bpy.ops.transform.resize}[self.mode]
+        return op("INVOKE_DEFAULT")
+
+
+def _gizmo_keys_enable(context):
+    """Our G, R and S ahead of Blender's. Blender's entries stay as they
+    are: an add-on entry is consulted before the stock one with the same
+    key, and turning the preference off simply removes ours."""
+    kc = context.window_manager.keyconfigs.addon
+    if kc is None:
+        return
+    for km_name in GIZMO_KEY_KEYMAPS:
+        try:
+            km = kc.keymaps.new(name=km_name, space_type="EMPTY")
+        except Exception:
+            continue
+        for mode, key, _i in GIZMO_KEY_MODES:
+            kmi = km.keymap_items.new("landfall.transform_key", key, "PRESS")
+            kmi.properties.mode = mode
+            _gizmo_keymaps.append((km, kmi))
+    _keyconfig_settle(context)
+    _wake_user_kmi("landfall.transform_key")
+
+
+def _gizmo_keys_disable():
+    _remove_kmis(_gizmo_keymaps)
+
+
+def _gizmo_keys_update(self, context):
+    _gizmo_keys_disable()
+    if self.keys_pick_gizmo:
+        _gizmo_keys_enable(context)
+
+
 class LANDFALL_OT_toggle_scene_flag(bpy.types.Operator):
     bl_idname = "landfall.toggle_scene_flag"
     bl_label = "Toggle"
@@ -3538,6 +3663,8 @@ def _reapply_mutes():
         if p.maya_extrude:
             _set_native_extrude(False)
             _wake_user_kmi("landfall.extrude")
+        if p.keys_pick_gizmo:
+            _wake_user_kmi("landfall.transform_key")
     except Exception as err:
         print("[landfall] could not re-apply the keymap mutings: %s" % err)
 
@@ -3578,6 +3705,10 @@ SHADOWS_INTENDED = {
     (name, "TAB", True, False, False)
     for name in ("Mesh", "Object Mode", "Sculpt", "Vertex Paint",
                  "Weight Paint", "Image Paint")
+} | {
+    # G, R and S pick the gizmo and then run Blender's own transform.
+    (name, key, False, False, False)
+    for name in GIZMO_KEY_KEYMAPS for _m, key, _i in GIZMO_KEY_MODES
 }
 
 # The keymaps the pies, the hotbox, Alt+W and the smooth levels go into.
@@ -3592,6 +3723,7 @@ NAV_IDNAMES = {idname for idname, _k, _m in NAV_ITEMS} | {
 OUR_KEYMAP_NAMES = ({name for name, _s in NAV_MODE_KEYMAPS}
                     | {row[0] for row in MAYA_NAV_EXTRA}
                     | {name for name, _s in KEYMAP_TARGETS}
+                    | set(GIZMO_KEY_KEYMAPS)
                     | {"Window", "Curve"})
 
 
@@ -4860,6 +4992,29 @@ class LANDFALL_Prefs(bpy.types.AddonPreferences):
         default=True,
         update=_extrude_update,
     )
+    keys_pick_gizmo: bpy.props.BoolProperty(
+        name="G, R and S pick the gizmo",
+        description=(
+            "The key shows the matching gizmo alone, the way Maya's W, E "
+            "and R do. With Gizmo only on, that is all it does; off, it "
+            "also runs Blender's move, rotate or scale. Off here leaves G, R "
+            "and S entirely to Blender"
+        ),
+        default=True,
+        update=_gizmo_keys_update,
+    )
+    gizmo_keys_only: bpy.props.BoolProperty(
+        name="Gizmo only, like Maya",
+        description=(
+            "G, R and S show the matching gizmo and nothing else: you "
+            "transform by dragging its handles, which stay on screen, as "
+            "with Maya's W, E and R. Off, the keys also start Blender's own "
+            "modal transform (axis keys, numeric input), during which "
+            "Blender hides every gizmo. The same button sits under the "
+            "gizmos in the panel"
+        ),
+        default=True,
+    )
     heal_keymaps: bpy.props.BoolProperty(
         name="Rebuild truncated keymaps at startup",
         description=(
@@ -4932,6 +5087,11 @@ class LANDFALL_Prefs(bpy.types.AddonPreferences):
         sub.prop(self, "gizmo_flags", index=0, text="Move", toggle=True)
         sub.prop(self, "gizmo_flags", index=1, text="Rotate", toggle=True)
         sub.prop(self, "gizmo_flags", index=2, text="Scale", toggle=True)
+        row = box.row(align=True)
+        row.prop(self, "keys_pick_gizmo")
+        sub = row.row(align=True)
+        sub.enabled = self.keys_pick_gizmo
+        sub.prop(self, "gizmo_keys_only", toggle=True)
         box.prop(self, "maya_extrude")
         box.prop(self, "heal_keymaps")
         col = box.column(align=True)
@@ -5954,6 +6114,7 @@ CLASSES = (
     LANDFALL_OT_extrude_spread,
     LANDFALL_OT_extrude_move,
     LANDFALL_OT_extrude,
+    LANDFALL_OT_transform_key,
     LANDFALL_OT_toggle_scene_flag,
     LANDFALL_OT_marking_menu,
     LANDFALL_OT_select_mode_multi,
@@ -6349,6 +6510,8 @@ def register():
             _keyconfig_settle(bpy.context)
         if p.maya_extrude:
             _extrude_enable(bpy.context)
+        if p.keys_pick_gizmo:
+            _gizmo_keys_enable(bpy.context)
         if p.maya_navigation:
             _maya_nav_enable(bpy.context)
         if p.marking_menu:
@@ -6360,6 +6523,7 @@ def register():
 def unregister():
     _leave_blender_stock()
     _extrude_disable()
+    _gizmo_keys_disable()
     _delete_disable()
     _marking_disable()
     _sheet_stop()

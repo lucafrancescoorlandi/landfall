@@ -6,6 +6,32 @@ the change.
 
 ---
 
+## 3.42.0
+
+**G, R and S pick the gizmo.** Asked for by Luca after a few tutorials:
+in Maya the manipulator on screen is the one of the tool last chosen with
+W, E or R, and in Blender the modal transform and the gizmo never spoke
+to each other. Now the three keys show the matching gizmo alone, in every
+workspace when the workspace preference is on, with the panel's three
+switches following. Two ways of working, chosen with the button under
+the gizmos in the panel, "G R S: gizmo only, like Maya", on to begin
+with: lit, the key only shows the gizmo and its handles do the
+transforming, staying on screen while they do; unlit, the key also runs
+Blender's own move, rotate or scale — the transform, its axis keys, the
+second G for the slide, the numeric input and the adjust panel all
+Blender's — and the gizmo appears when it ends, because Blender hides
+every gizmo for the length of a modal transform, Landfall or not, and no
+add-on can change that; that is what the first try did and what Luca
+found annoying, hence the button. Object Mode, the edit modes and Pose
+Mode; not Sculpt or the paint modes, where the same letters are brushes.
+Preference "G, R and S pick the gizmo", on by default; the entries are
+added ahead of Blender's and removed when it is off, so nothing of
+Blender's is touched. Verified in Blender 5.2.1: all ten viewports of
+the ten workspaces follow each key, three gizmos on from the panel go
+back to Move alone on G, and with the add-on disabled the Object Mode,
+Mesh, Curve, Armature, Pose, Lattice and Metaball keymaps count exactly
+their stock entries.
+
 ## 3.41.3
 
 Found by a third review, harsher than the first two: the whole file read
