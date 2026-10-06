@@ -32,6 +32,16 @@ Step-by-step PDFs, in Italian and English.
 | **Installation** | [Landfall-installazione.pdf](docs/Landfall-installazione.pdf) | [Landfall-installation.pdf](docs/Landfall-installation.pdf) |
 | **Commands** | [Landfall-comandi.pdf](docs/Landfall-comandi.pdf) | [Landfall-commands.pdf](docs/Landfall-commands.pdf) |
 
+### Video tutorials
+
+Thirteen short clips per language, with subtitles: installation, updating, and
+one for each tab of the panel. Click a clip on GitHub to play it in the page,
+or download the whole folder.
+
+| | Italiano | English |
+|---|---|---|
+| **Clips** | [docs/video/italiano](docs/video/italiano) | [docs/video/english](docs/video/english) |
+| **Script** | [Landfall-video-script-IT.md](docs/video/Landfall-video-script-IT.md) | [Landfall-video-script-EN.md](docs/video/Landfall-video-script-EN.md) |
 ---
 
 ## Installation
