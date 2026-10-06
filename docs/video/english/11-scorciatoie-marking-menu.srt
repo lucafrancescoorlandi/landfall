@@ -1,0 +1,49 @@
+1
+00:00:00.000 --> 00:00:03.450
+Shortcuts and marking menu
+Ctrl+Tab, Shift+Q, Alt+Q, E, F, Shift+F
+
+2
+00:00:03.500 --> 00:00:08.883
+Ctrl+Tab opens the marking menu, in place of Blender's mode pie. In Object Mode: the modes on the left, Edit and Sculpt on the right, Display and Edit above.
+
+3
+00:00:08.933 --> 00:00:14.317
+A click on a branch opens its list, anchored under the entry. The entries show no keys, as in Maya.
+
+4
+00:00:14.367 --> 00:00:19.750
+In Edit Mode: vertex, edge and face on the left, like the 1, 2, 3 keys; Modeling on the right with the modelling commands.
+
+5
+00:00:19.800 --> 00:00:25.183
+The Modeling branch: the modelling commands in two columns, Make face included.
+
+6
+00:00:25.233 --> 00:00:30.617
+Shift+Q: Landfall's pie with the eight most-used commands, in every mode.
+
+7
+00:00:30.667 --> 00:00:36.050
+Shift+Alt+Q: the modelling pie in Edit Mode. Shift+Alt+X: the snap pie, like Maya's X.
+
+8
+00:00:36.100 --> 00:00:41.483
+Alt+Q: the hotbox, every panel section in columns under the mouse.
+
+9
+00:00:41.533 --> 00:00:46.917
+E extrudes with Maya's parameters. F frames the selection, in Edit Mode too. Shift+F makes the face (Blender's Make Edge/Face).
+
+10
+00:00:46.967 --> 00:00:52.350
+G, R, S show the matching manipulator. Alt+1 2 3 the smooth preview, Alt+W the gizmos, Backspace deletes like X and Delete.
+
+11
+00:00:52.400 --> 00:00:57.783
+The Shortcuts card lists them all. To change one: Preferences › Keymap, search landfall, and change every copy, one per mode.
+
+12
+00:00:57.833 --> 00:01:00.717
+Shortcuts
+

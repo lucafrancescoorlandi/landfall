@@ -1,0 +1,49 @@
+1
+00:00:00.000 --> 00:00:03.450
+Modeling
+Pivot, freeze, Maya's extrude, merge, smooth preview
+
+2
+00:00:03.500 --> 00:00:08.883
+The Modeling section. In Object Mode the Edit Mode commands are greyed out; here we are in Edit Mode with a face selected.
+
+3
+00:00:08.933 --> 00:00:14.317
+Center pivot puts the origin at the centre of the geometry. Edit pivot: hold it down, then G and R move the origin instead of the object; press again to leave.
+
+4
+00:00:14.367 --> 00:00:19.750
+Freeze applies location, rotation and scale, like Freeze Transformations. Hierarchy selects the children; Inverse inverts the selection.
+
+5
+00:00:19.800 --> 00:00:25.183
+Extrude with options is Maya's polyExtrudeFace: thickness, offset, divisions, keep faces together, twist and taper. It is on the E key too.
+
+6
+00:00:25.233 --> 00:00:30.617
+Press E, move the mouse, confirm: the panel at the bottom left shows the six parameters and the move, editable while the extrusion is the last operation.
+
+7
+00:00:30.667 --> 00:00:36.050
+Thickness 0 keeps the mouse distance; any other value replaces it. With only edges or vertices selected, E hands over to Blender's extrude.
+
+8
+00:00:36.100 --> 00:00:41.483
+Merge by distance joins vertices within a threshold; Merge at center collapses them into one point. Spin rotates the edge, Detach separates the faces, Grid fill fills a closed loop.
+
+9
+00:00:41.533 --> 00:00:46.917
+Smooth preview: Alt+1 shows the cage alone…
+
+10
+00:00:46.967 --> 00:00:52.350
+…Alt+2 the smooth surface with the cage on top…
+
+11
+00:00:52.400 --> 00:00:57.783
+…Alt+3 the surface alone. It is Blender's Subdivision Surface, so it stays in the stack: Subdivisions sets the level, Apply smooth makes it permanent.
+
+12
+00:00:57.833 --> 00:01:00.717
+Modeling
+

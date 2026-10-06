@@ -1,0 +1,29 @@
+1
+00:00:00.000 --> 00:00:03.450
+Texturing
+UVs and PBR sets
+
+2
+00:00:03.500 --> 00:00:08.883
+The Texturing section, in Edit Mode.
+
+3
+00:00:08.933 --> 00:00:14.317
+Unwrap + scale + pack does in one step what Maya does in three: unwrap, average island scale, pack.
+
+4
+00:00:14.367 --> 00:00:19.750
+Pla, Cyl, Sph, Auto: planar, cylindrical, spherical and automatic projections.
+
+5
+00:00:19.800 --> 00:00:25.183
+Load PBR set: pick the images of a set and Landfall builds the Principled BSDF, wiring every map by name: basecolor, roughness, metallic, normal, height, emission, opacity…
+
+6
+00:00:25.233 --> 00:00:30.617
+Reload textures reloads every image of the file from disk, after painting them outside.
+
+7
+00:00:30.667 --> 00:00:33.550
+Texturing
+

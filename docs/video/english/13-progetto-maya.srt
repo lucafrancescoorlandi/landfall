@@ -1,0 +1,37 @@
+1
+00:00:00.000 --> 00:00:03.450
+Maya-style project
+Create, Set, Open scene, Save as, workspace.mel
+
+2
+00:00:03.500 --> 00:00:08.883
+The project system mirrors Maya's Set Project: a folder holding scenes, sourceimages, images and the rest, and a workspace.mel that Maya recognises.
+
+3
+00:00:08.933 --> 00:00:14.317
+Create: pick where and what to call it. Landfall builds the folders, writes the workspace.mel and makes the project current.
+
+4
+00:00:14.367 --> 00:00:19.750
+The current project's name appears at the top of the section. Set makes an existing project current, one made by Maya too.
+
+5
+00:00:19.800 --> 00:00:25.183
+Open scene, or Ctrl+O, opens the browser straight inside scenes/. With no project it is Blender's Open.
+
+6
+00:00:25.233 --> 00:00:30.617
+Save as, or Ctrl+Shift+S, saves into scenes/ with relative paths. A file already in the project stays where it is. Ctrl+S overwrites the current file, as in Blender.
+
+7
+00:00:30.667 --> 00:00:36.050
+Before moving or copying the project, Make paths relative. Write workspace.mel adds Maya's file to a project made without one.
+
+8
+00:00:36.100 --> 00:00:41.483
+In the preferences: the projects' root folder, renders in images/, the assets/ folder as an asset library.
+
+9
+00:00:41.533 --> 00:00:44.417
+Project
+

@@ -1,0 +1,26 @@
+1
+00:00:00.000 --> 00:00:03.450
+Project
+The panel section
+
+2
+00:00:03.500 --> 00:00:08.883
+The Project section. At the top, the name of the current project, or 'No project set'.
+
+3
+00:00:08.933 --> 00:00:14.317
+Create builds the folders of a new project and makes it current; Set makes an existing project folder current.
+
+4
+00:00:14.367 --> 00:00:19.750
+Open scene and Save as work inside scenes/: they are Ctrl+O and Ctrl+Shift+S too. Ctrl+S stays Blender's own.
+
+5
+00:00:19.800 --> 00:00:25.183
+Make paths relative makes every external path relative, to do before moving the project. Write workspace.mel writes Maya's project file.
+
+6
+00:00:25.233 --> 00:00:28.617
+Project
+Video 13 shows the whole workflow
+

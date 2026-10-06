@@ -1,0 +1,46 @@
+1
+00:00:00.000 --> 00:00:03.450
+Setup
+The Maya set-up in one go
+
+2
+00:00:03.500 --> 00:00:08.883
+The Setup section, at the bottom of the panel: it switches the five Maya-style settings on and off together. The line above says how many are on.
+
+3
+00:00:08.933 --> 00:00:14.317
+Turn on switches navigation, marking menu, contextual wire, colors and grid on. Turn off switches them off: it is for working the Blender way with the add-on still installed.
+
+4
+00:00:14.367 --> 00:00:19.750
+Save as startup saves the preferences and the startup file: layout and settings come back at every launch.
+
+5
+00:00:19.800 --> 00:00:25.183
+Self check verifies menus, shortcuts and keymaps and writes the result in the landfall_self_check text block.
+
+6
+00:00:25.233 --> 00:00:30.617
+Navigation and Marking menu are the same switches as in the preferences, within reach.
+
+7
+00:00:30.667 --> 00:00:36.050
+Maya colors applies Maya's theme; the arrow restores your previous theme, the other icon the factory one.
+
+8
+00:00:36.100 --> 00:00:41.483
+Finite grid: a grid that ends, like Maya's: 22 cells of 1 metre a side, adjustable next to it. Follow theme gives it the theme's color.
+
+9
+00:00:41.533 --> 00:00:46.917
+Off, Blender's infinite floor comes back, with its axis lines. Up close the two look alike; the difference shows when you zoom out.
+
+10
+00:00:46.967 --> 00:00:52.350
+Shortcuts opens the card with every shortcut: it stays over the viewport, moves when dragged and reads the keys from the keymap.
+
+11
+00:00:52.400 --> 00:00:55.783
+Setup
+Landfall on is Maya, off is Blender
+

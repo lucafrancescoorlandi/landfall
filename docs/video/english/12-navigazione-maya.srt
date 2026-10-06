@@ -1,0 +1,37 @@
+1
+00:00:00.000 --> 00:00:03.450
+Maya navigation
+Alt + mouse, F, Home, double click
+
+2
+00:00:03.500 --> 00:00:08.883
+With Navigation on, in the Setup panel or in the preferences, the viewport handles like Maya's.
+
+3
+00:00:08.933 --> 00:00:14.317
+Alt + left button orbits around the selection…
+
+4
+00:00:14.367 --> 00:00:19.750
+…Alt + middle button pans, Alt + right button zooms in and out towards the pointer.
+
+5
+00:00:19.800 --> 00:00:25.183
+F frames the selection, in Object Mode and in Edit Mode on the components. Home frames everything: Maya's A (on a laptop Fn + Left Arrow).
+
+6
+00:00:25.233 --> 00:00:30.617
+Double click selects an edge loop, Ctrl + double click a ring: in Blender they were Alt+click, which now orbits.
+
+7
+00:00:30.667 --> 00:00:36.050
+The switch also sets Orbit Around Selection, Auto Depth and Zoom to Mouse Position. Blender's own middle-button navigation keeps working.
+
+8
+00:00:36.100 --> 00:00:41.483
+Off, or with Landfall uninstalled, everything goes back to Blender's factory preferences.
+
+9
+00:00:41.533 --> 00:00:44.417
+Maya navigation
+

@@ -1,0 +1,41 @@
+1
+00:00:00.000 --> 00:00:03.450
+The panel on the left
+Where Landfall is and how to put it where Maya's shelf lives
+
+2
+00:00:03.500 --> 00:00:08.883
+Landfall appears in two places. The first is the viewport sidebar: N key, Landfall tab.
+
+3
+00:00:08.933 --> 00:00:14.317
+The second is the Properties editor, Scene tab. Same commands. Blender allows no panels in the toolbar on the left, so a Properties editor is opened on the left side.
+
+4
+00:00:14.367 --> 00:00:19.750
+Step 1: in the viewport, View › Area › Vertical Split. Bring the line close to the left edge and click.
+
+5
+00:00:19.800 --> 00:00:25.183
+Step 2: in the narrow area just made, the button at the top left picks the editor type: Properties.
+
+6
+00:00:25.233 --> 00:00:30.617
+Step 3: in the icon column pick Scene, the one with the cone and the sphere, and open the Landfall panel.
+
+7
+00:00:30.667 --> 00:00:36.050
+Close the Blender panels you do not need: Blender remembers what you leave open.
+
+8
+00:00:36.100 --> 00:00:41.483
+At the top is the reminder: G move, R rotate, S scale. Switch it off in the preferences once you no longer need it.
+
+9
+00:00:41.533 --> 00:00:46.917
+Step 4: from an empty scene, Setup › Save as startup. The layout comes back like this at every launch.
+
+10
+00:00:46.967 --> 00:00:49.850
+Done
+
