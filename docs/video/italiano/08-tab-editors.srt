@@ -1,0 +1,29 @@
+1
+00:00:00.000 --> 00:00:03.450
+Editors and output
+Workspace, playblast, quad view, regioni
+
+2
+00:00:03.500 --> 00:00:08.883
+La sezione Editors and output.
+
+3
+00:00:08.933 --> 00:00:14.317
+UV e Shading passano ai workspace UV Editing e Shading di Blender, come le finestre UV Editor e Hypershade di Maya.
+
+4
+00:00:14.367 --> 00:00:19.750
+Playblast: il render OpenGL dell'animazione dal viewport, come in Maya. Il risultato segue le impostazioni di output del render.
+
+5
+00:00:19.800 --> 00:00:25.183
+Quad view, o Ctrl+Alt+Q: quattro viste nel viewport, alto, fronte, lato e prospettiva. Di nuovo per tornare.
+
+6
+00:00:25.233 --> 00:00:30.617
+Toolbar, Sidebar e Header mostrano o nascondono quelle regioni in tutti i viewport insieme.
+
+7
+00:00:30.667 --> 00:00:33.550
+Editors and output
+

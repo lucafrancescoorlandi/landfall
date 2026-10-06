@@ -1,0 +1,46 @@
+1
+00:00:00.000 --> 00:00:03.450
+Gizmos
+Manipolatori, orientamento e pivot
+
+2
+00:00:03.500 --> 00:00:08.883
+La sezione Gizmos: l'interruttore generale, i tre manipolatori, il pulsante G R S e i due menu di orientamento e pivot.
+
+3
+00:00:08.933 --> 00:00:14.317
+Move, Rotate e Scale scelgono quali manipolatori vedere. Con la preferenza 'Same transform gizmos in every workspace' la scelta vale in tutti i workspace, come in Maya.
+
+4
+00:00:14.367 --> 00:00:19.750
+Premendo G resta acceso solo il manipolatore di spostamento…
+
+5
+00:00:19.800 --> 00:00:25.183
+…R quello di rotazione…
+
+6
+00:00:25.233 --> 00:00:30.617
+…S quello di scala. Come W, E, R in Maya. I tre pulsanti del pannello seguono.
+
+7
+00:00:30.667 --> 00:00:36.050
+Il pulsante 'G R S: gizmo only, like Maya', acceso di default: il tasto mostra solo il manipolatore e trasformi con le sue maniglie, che restano visibili.
+
+8
+00:00:36.100 --> 00:00:41.483
+Spento, il tasto avvia anche la trasformazione modale di Blender: assi X Y Z, numeri, Invio. Durante la modale Blender nasconde i gizmi.
+
+9
+00:00:41.533 --> 00:00:46.917
+Sotto: orientamento (Global, Local, Normal…) e pivot (Median Point, 3D Cursor…). I tasti virgola e punto aprono i loro pie.
+
+10
+00:00:46.967 --> 00:00:52.350
+Alt+W nasconde e mostra i manipolatori senza toccare il pannello; il gizmo di navigazione nell'angolo resta.
+
+11
+00:00:52.400 --> 00:00:55.783
+Gizmos
+Nelle preferenze: Same transform gizmos · G, R and S pick the gizmo
+

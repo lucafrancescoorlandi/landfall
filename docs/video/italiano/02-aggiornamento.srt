@@ -1,0 +1,38 @@
+1
+00:00:00.000 --> 00:00:03.450
+Aggiornare Landfall
+Prima si disinstalla la versione vecchia, poi si installa la nuova
+
+2
+00:00:03.500 --> 00:00:08.883
+Installare uno zip nuovo sopra uno vecchio non è affidabile: Blender può continuare a eseguire il codice precedente mostrando il numero nuovo.
+
+3
+00:00:08.933 --> 00:00:14.317
+Quindi: Preferences › Get Extensions, cerca landfall.
+
+4
+00:00:14.367 --> 00:00:19.750
+Dalla freccia accanto all'estensione scegli Uninstall. Tema, griglia e navigazione tornano da soli a quelli di Blender.
+
+5
+00:00:19.800 --> 00:00:25.183
+Chiudi Blender e riaprilo: così nessuna copia compilata del vecchio codice resta in memoria.
+
+6
+00:00:25.233 --> 00:00:30.617
+Poi Preferences › Add-ons › Install from Disk… con lo zip nuovo, come alla prima installazione.
+
+7
+00:00:30.667 --> 00:00:36.050
+Controlla il numero di versione nelle preferenze: deve essere quello dello zip. Il set-up Maya torna acceso da solo.
+
+8
+00:00:36.100 --> 00:00:41.483
+Setup › Self check verifica menu, scorciatoie e keymap; due NOTE su Alt+Q e Alt+W sono normali.
+
+9
+00:00:41.533 --> 00:00:44.917
+Fatto
+Le novità di ogni versione sono nel CHANGELOG
+

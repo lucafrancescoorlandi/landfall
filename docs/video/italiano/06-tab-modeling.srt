@@ -1,0 +1,49 @@
+1
+00:00:00.000 --> 00:00:03.450
+Modeling
+Pivot, freeze, estrusione di Maya, merge, smooth preview
+
+2
+00:00:03.500 --> 00:00:08.883
+La sezione Modeling. In Object Mode i comandi di Edit Mode sono grigi; qui siamo in Edit Mode con una faccia selezionata.
+
+3
+00:00:08.933 --> 00:00:14.317
+Center pivot porta l'origine al centro della geometria. Edit pivot: tieni premuto, poi G ed R spostano l'origine invece dell'oggetto; ripremi per uscire.
+
+4
+00:00:14.367 --> 00:00:19.750
+Freeze applica posizione, rotazione e scala, come Freeze Transformations. Hierarchy seleziona i figli; Inverse inverte la selezione.
+
+5
+00:00:19.800 --> 00:00:25.183
+Extrude with options è il polyExtrudeFace di Maya: thickness, offset, divisions, keep faces together, twist e taper. È anche sul tasto E.
+
+6
+00:00:25.233 --> 00:00:30.617
+Premi E, muovi il mouse, conferma: il pannello in basso a sinistra mostra i sei parametri e lo spostamento, modificabili finché l'estrusione è l'ultima operazione.
+
+7
+00:00:30.667 --> 00:00:36.050
+Thickness 0 tiene la distanza del mouse; un altro valore la sostituisce. Con soli spigoli o vertici selezionati, E passa all'estrusione di Blender.
+
+8
+00:00:36.100 --> 00:00:41.483
+Merge by distance unisce i vertici entro una soglia; Merge at center li fonde in un punto. Spin ruota lo spigolo, Detach separa le facce, Grid fill riempie un anello chiuso.
+
+9
+00:00:41.533 --> 00:00:46.917
+Smooth preview: Alt+1 mostra solo la gabbia…
+
+10
+00:00:46.967 --> 00:00:52.350
+…Alt+2 la superficie liscia con la gabbia sopra…
+
+11
+00:00:52.400 --> 00:00:57.783
+…Alt+3 solo la superficie. È il Subdivision Surface di Blender, quindi resta nello stack: Subdivisions regola il livello, Apply smooth lo applica per sempre.
+
+12
+00:00:57.833 --> 00:01:00.717
+Modeling
+

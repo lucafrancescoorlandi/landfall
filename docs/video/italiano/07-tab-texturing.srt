@@ -1,0 +1,29 @@
+1
+00:00:00.000 --> 00:00:03.450
+Texturing
+UV e set PBR
+
+2
+00:00:03.500 --> 00:00:08.883
+La sezione Texturing, in Edit Mode.
+
+3
+00:00:08.933 --> 00:00:14.317
+Unwrap + scale + pack fa in un passo quello che in Maya sono tre comandi: unwrap, scala media delle isole, pack.
+
+4
+00:00:14.367 --> 00:00:19.750
+Pla, Cyl, Sph, Auto: le proiezioni planare, cilindrica, sferica e automatica.
+
+5
+00:00:19.800 --> 00:00:25.183
+Load PBR set: scegli le immagini di un set e Landfall costruisce il Principled BSDF collegando ogni mappa dal nome: basecolor, roughness, metallic, normal, height, emission, opacity…
+
+6
+00:00:25.233 --> 00:00:30.617
+Reload textures ricarica dal disco tutte le immagini del file, dopo averle ridipinte fuori.
+
+7
+00:00:30.667 --> 00:00:33.550
+Texturing
+

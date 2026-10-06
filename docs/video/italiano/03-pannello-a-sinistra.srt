@@ -1,0 +1,41 @@
+1
+00:00:00.000 --> 00:00:03.450
+Il pannello a sinistra
+Dove si trova Landfall e come metterlo dove sta la shelf di Maya
+
+2
+00:00:03.500 --> 00:00:08.883
+Landfall compare in due posti. Il primo è la barra laterale del viewport: tasto N, linguetta Landfall.
+
+3
+00:00:08.933 --> 00:00:14.317
+Il secondo è l'editor Properties, scheda Scene. Stessi comandi. Blender non ammette pannelli nella barra degli strumenti a sinistra, quindi si apre un Properties sul lato sinistro.
+
+4
+00:00:14.367 --> 00:00:19.750
+Passo 1: nel viewport, View › Area › Vertical Split. Porta la linea vicino al bordo sinistro e fai click.
+
+5
+00:00:19.800 --> 00:00:25.183
+Passo 2: nell'area stretta appena creata, il pulsante in alto a sinistra sceglie il tipo di editor: Properties.
+
+6
+00:00:25.233 --> 00:00:30.617
+Passo 3: nella colonna di icone scegli Scene, quella con il cono e la sfera, e apri il pannello Landfall.
+
+7
+00:00:30.667 --> 00:00:36.050
+Chiudi i pannelli di Blender che non ti servono: Blender ricorda cosa lasci aperto.
+
+8
+00:00:36.100 --> 00:00:41.483
+In cima c'è il promemoria: G sposta, R ruota, S scala. Si spegne dalle preferenze quando non serve più.
+
+9
+00:00:41.533 --> 00:00:46.917
+Passo 4: da una scena vuota, Setup › Save as startup. Il layout torna così a ogni apertura.
+
+10
+00:00:46.967 --> 00:00:49.850
+Fatto
+

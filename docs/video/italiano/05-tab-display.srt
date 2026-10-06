@@ -1,0 +1,41 @@
+1
+00:00:00.000 --> 00:00:03.450
+Display
+X-ray, wire, nascondi e mostra, isolate, border edges, colore
+
+2
+00:00:03.500 --> 00:00:08.883
+La sezione Display raccoglie quello che in Maya sta nel menu Display e nella shelf.
+
+3
+00:00:08.933 --> 00:00:14.317
+X-ray rende trasparenti solo gli oggetti selezionati; il cursore accanto regola l'opacità.
+
+4
+00:00:14.367 --> 00:00:19.750
+Wire on shaded: il wireframe sopra lo shading solido, come Wireframe on Shaded di Maya.
+
+5
+00:00:19.800 --> 00:00:25.183
+Hide nasconde la selezione. Show sel mostra gli oggetti nascosti selezionati nell'Outliner, Show last l'ultimo gruppo nascosto, Show all tutto.
+
+6
+00:00:25.233 --> 00:00:30.617
+In Edit Mode gli stessi pulsanti lavorano sui componenti: nascondono e mostrano le facce.
+
+7
+00:00:30.667 --> 00:00:36.050
+Isolate è la Local View di Blender: solo la selezione. Di nuovo per tornare. In Edit Mode nasconde il resto della mesh.
+
+8
+00:00:36.100 --> 00:00:41.483
+Border edges disegna in arancione gli spigoli aperti: bordi e buchi della mesh. Sotto, spessore e colore; Select border edges li seleziona in Edit Mode.
+
+9
+00:00:41.533 --> 00:00:46.917
+Object color: otto colori e uno libero per gli oggetti selezionati, la X torna al bianco. Mette lo shading del viewport su Object.
+
+10
+00:00:46.967 --> 00:00:49.850
+Display
+

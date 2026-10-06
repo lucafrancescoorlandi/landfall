@@ -1,0 +1,49 @@
+1
+00:00:00.000 --> 00:00:03.450
+Scorciatoie e marking menu
+Ctrl+Tab, Shift+Q, Alt+Q, E, F, Shift+F
+
+2
+00:00:03.500 --> 00:00:08.883
+Ctrl+Tab apre il marking menu, al posto del pie delle modalità di Blender. In Object Mode: le modalità a sinistra, Edit e Sculpt a destra, Display ed Edit sopra.
+
+3
+00:00:08.933 --> 00:00:14.317
+Un click su un ramo apre il suo elenco, ancorato sotto la voce. Le voci non mostrano tasti, come in Maya.
+
+4
+00:00:14.367 --> 00:00:19.750
+In Edit Mode: vertice, spigolo e faccia a sinistra, come i tasti 1, 2, 3; Modeling a destra con i comandi di modellazione.
+
+5
+00:00:19.800 --> 00:00:25.183
+Il ramo Modeling: i comandi di modellazione in due colonne, Make face compreso.
+
+6
+00:00:25.233 --> 00:00:30.617
+Shift+Q: il pie di Landfall con gli otto comandi più usati, in ogni modalità.
+
+7
+00:00:30.667 --> 00:00:36.050
+Shift+Alt+Q: il pie di modellazione in Edit Mode. Shift+Alt+X: lo snap pie, come la X di Maya.
+
+8
+00:00:36.100 --> 00:00:41.483
+Alt+Q: la hotbox, tutte le sezioni del pannello in colonne sotto il mouse.
+
+9
+00:00:41.533 --> 00:00:46.917
+E estrude con i parametri di Maya. F inquadra la selezione, anche in Edit Mode. Shift+F crea la faccia (Make Edge/Face di Blender).
+
+10
+00:00:46.967 --> 00:00:52.350
+G, R, S mostrano il manipolatore corrispondente. Alt+1 2 3 lo smooth preview, Alt+W i gizmi, Backspace cancella come X e Canc.
+
+11
+00:00:52.400 --> 00:00:57.783
+La scheda Shortcuts le elenca tutte. Per cambiarne una: Preferences › Keymap, cerca landfall, e cambia ogni copia, una per modalità.
+
+12
+00:00:57.833 --> 00:01:00.717
+Scorciatoie
+

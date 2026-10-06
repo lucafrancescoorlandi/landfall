@@ -1,0 +1,46 @@
+1
+00:00:00.000 --> 00:00:03.450
+Setup
+Il set-up Maya in un colpo solo
+
+2
+00:00:03.500 --> 00:00:08.883
+La sezione Setup, in fondo al pannello: accende e spegne insieme le cinque impostazioni in stile Maya. La riga sopra dice quante sono attive.
+
+3
+00:00:08.933 --> 00:00:14.317
+Turn on accende navigazione, marking menu, wire contestuale, colori e griglia. Turn off le spegne: serve a lavorare alla Blender tenendo l'add-on installato.
+
+4
+00:00:14.367 --> 00:00:19.750
+Save as startup salva preferenze e file di avvio: layout e impostazioni tornano a ogni apertura.
+
+5
+00:00:19.800 --> 00:00:25.183
+Self check verifica menu, scorciatoie e keymap e scrive il risultato nel text block landfall_self_check.
+
+6
+00:00:25.233 --> 00:00:30.617
+Navigation e Marking menu sono gli stessi interruttori delle preferenze, a portata di mano.
+
+7
+00:00:30.667 --> 00:00:36.050
+Maya colors applica il tema di Maya; la freccia rimette il tema precedente, l'altra icona quello di fabbrica.
+
+8
+00:00:36.100 --> 00:00:41.483
+Finite grid: una griglia che finisce, come quella di Maya: 22 celle di 1 metro per lato, regolabili accanto. Follow theme le dà il colore del tema.
+
+9
+00:00:41.533 --> 00:00:46.917
+Spenta, torna il pavimento infinito di Blender, con le sue linee degli assi. Da vicino i due si somigliano; la differenza si vede allontanando la vista.
+
+10
+00:00:46.967 --> 00:00:52.350
+Shortcuts apre la scheda con tutte le scorciatoie: resta sopra il viewport, si sposta trascinandola e legge i tasti dal keymap.
+
+11
+00:00:52.400 --> 00:00:55.783
+Setup
+Landfall acceso è Maya, spento è Blender
+

@@ -1,0 +1,37 @@
+1
+00:00:00.000 --> 00:00:03.450
+Navigazione Maya
+Alt + mouse, F, Home, doppio click
+
+2
+00:00:03.500 --> 00:00:08.883
+Con Navigation acceso, nel pannello Setup o nelle preferenze, il viewport si guida come in Maya.
+
+3
+00:00:08.933 --> 00:00:14.317
+Alt + tasto sinistro orbita attorno alla selezione…
+
+4
+00:00:14.367 --> 00:00:19.750
+…Alt + tasto centrale sposta, Alt + tasto destro avvicina e allontana verso il puntatore.
+
+5
+00:00:19.800 --> 00:00:25.183
+F inquadra la selezione, in Object Mode e in Edit Mode sui componenti. Home inquadra tutto: è la A di Maya (sul portatile Fn + freccia sinistra).
+
+6
+00:00:25.233 --> 00:00:30.617
+Doppio click seleziona un loop di spigoli, Ctrl + doppio click un ring: in Blender erano Alt+click, che ora serve a orbitare.
+
+7
+00:00:30.667 --> 00:00:36.050
+L'interruttore imposta anche Orbit Around Selection, Auto Depth e Zoom to Mouse Position. La navigazione di Blender con il tasto centrale continua a funzionare.
+
+8
+00:00:36.100 --> 00:00:41.483
+Spento, o con Landfall disinstallato, tutto torna alle preferenze di fabbrica di Blender.
+
+9
+00:00:41.533 --> 00:00:44.417
+Navigazione Maya
+

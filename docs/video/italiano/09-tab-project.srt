@@ -1,0 +1,26 @@
+1
+00:00:00.000 --> 00:00:03.450
+Project
+La sezione del pannello
+
+2
+00:00:03.500 --> 00:00:08.883
+La sezione Project. In alto il nome del progetto attivo, o 'No project set'.
+
+3
+00:00:08.933 --> 00:00:14.317
+Create crea le cartelle di un nuovo progetto e lo imposta; Set imposta come attiva una cartella di progetto esistente.
+
+4
+00:00:14.367 --> 00:00:19.750
+Open scene e Save as lavorano dentro scenes/: sono anche Ctrl+O e Ctrl+Shift+S. Ctrl+S resta quello di Blender.
+
+5
+00:00:19.800 --> 00:00:25.183
+Make paths relative rende relativi tutti i percorsi esterni, da fare prima di spostare il progetto. Write workspace.mel scrive il file di progetto di Maya.
+
+6
+00:00:25.233 --> 00:00:28.617
+Project
+Il video 13 mostra il flusso completo
+

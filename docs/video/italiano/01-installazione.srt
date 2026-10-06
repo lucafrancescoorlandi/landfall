@@ -1,0 +1,42 @@
+1
+00:00:00.000 --> 00:00:03.450
+Installare Landfall
+Download dello zip e installazione in Blender 5.2
+
+2
+00:00:03.500 --> 00:00:08.883
+Landfall vive su GitHub: github.com/lucafrancescoorlandi/landfall. Il README è la documentazione completa; le guide PDF sono nella cartella docs.
+
+3
+00:00:08.933 --> 00:00:14.317
+A destra, sotto Releases, apri l'ultima versione: sotto Assets scarica landfall-x.x.x.zip. Non decomprimerlo: Blender vuole lo zip così com'è.
+
+4
+00:00:14.367 --> 00:00:19.750
+In Blender apri Edit › Preferences e scegli la scheda Add-ons.
+
+5
+00:00:19.800 --> 00:00:25.183
+La freccia in alto a destra apre un menu: scegli Install from Disk… e seleziona lo zip appena scaricato.
+
+6
+00:00:25.233 --> 00:00:30.617
+Landfall compare nell'elenco. Controlla che la casella sia spuntata e che il numero di versione sia quello del file.
+
+7
+00:00:30.667 --> 00:00:36.050
+Aprendo la freccia accanto al nome vedi le preferenze: sono già tutte accese. Landfall acceso è Maya; spento o disinstallato è Blender di fabbrica.
+
+8
+00:00:36.100 --> 00:00:41.483
+Chiudi le preferenze: il viewport ha già i colori di Maya, la griglia finita e la navigazione con Alt e il mouse.
+
+9
+00:00:41.533 --> 00:00:46.917
+Da una scena vuota premi Setup › Save as startup: preferenze e layout tornano uguali a ogni avvio.
+
+10
+00:00:46.967 --> 00:00:50.350
+Fatto
+Le guide PDF sono nella cartella docs del repository
+
